@@ -32,7 +32,7 @@ reconstruction.
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/jjenkins01/warptools-tilt-visualiser.git
+git clone https://github.com/jjenkins01/warptools-visualiser.git
 cd warptools-tilt-visualiser
 ```
 
