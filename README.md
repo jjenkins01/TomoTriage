@@ -32,8 +32,8 @@ reconstruction.
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/jjenkins01/warptools-visualiser.git
-cd warptools-visualiser
+git clone https://github.com/jjenkins01/warptools_visualiser.git
+cd warptools_visualiser
 ```
 
 ### 2. Create the conda environment
