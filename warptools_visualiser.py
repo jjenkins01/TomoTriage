@@ -6,10 +6,10 @@ PyQt5-based interactive viewer for WarpTools tilt series quality control.
 
 Layout
 ------
-  Left   : Tilt image with optional motion track overlay (QPainter)
-  Right  : Power spectrum 
-  Far right: Scrollable tilt series list
-  Bottom : Overview bar (click to jump; CTF-colour-coded)
+  Left   : tilt image with optional motion track overlay (QPainter)
+  Right  : power spectrum (aspect-correct, 2:1 for half-Fourier images)
+  Far right: scrollable tilt series list
+  Bottom : overview bar (click to jump; CTF-colour-coded)
   Info   : CTF fit, defocus, motion per tilt from per-frame XML
 
 Motion tracks are drawn spatially — each patch at its correct grid position
@@ -183,7 +183,10 @@ def update_xml_usetilt(xml_path, excluded):
         shutil.copy2(xml_path, xml_path + f'.backup_{ts}')
         try: ET.indent(tree, space='  ')
         except AttributeError: pass
-        tree.write(xml_path, encoding='unicode', xml_declaration=False)
+        xml_string = ET.tostring(root, encoding='unicode')
+        with open(xml_path, 'w', encoding='utf-8') as f:
+            f.write('<?xml version="1.0" encoding="utf-8"?>\n')
+            f.write(xml_string)
         print(f"  XML updated: {xml_path}")
     except Exception as e:
         print(f"  [ERROR] XML: {e}")
