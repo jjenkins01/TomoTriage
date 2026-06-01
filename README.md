@@ -32,8 +32,8 @@ reconstruction.
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/jjenkins01/warptools-tilt-visualiser.git
-cd warptools-tilt-visualiser
+git clone https://github.com/jjenkins01/warptools_visualiser.git
+cd warptools_visualiser
 ```
 
 ### 2. Create the conda environment
@@ -42,16 +42,16 @@ Using the provided `environment.yml`:
 
 ```bash
 conda env create -f environment.yml
-conda activate warp_tools_visualiser
+conda activate warptools_visualiser
 ```
 
 Or manually:
 
 ```bash
-conda create -n warp_tools_visualiser \
+conda create -n warptools_visualiser \
     python=3.11 pyqt numpy mrcfile matplotlib \
     -c conda-forge -y
-conda activate warp_tools_visualiser
+conda activate warptools_visualiser
 ```
 
 ### 3. Verify the installation
@@ -89,7 +89,7 @@ warp_tiltseries                                  Tilt-series processing dir
 ├── tomogram01.xml                               Tilt-series XML (<UseTilt>)
 └── tiltstack/
     └── tomogram01/
-        └── tomogram01.st                       Tilt series stack
+        └── tomogram01.st                        Tilt series stack
 ```
 
 Setting shell variables beforehand can help to speed up commands but not essential:
@@ -107,9 +107,9 @@ warp_ts=/path/to/warp_tiltseries
 ### Batch mode — all tilt series in a directory
 
 ```bash
-conda activate warp_tools_visualiser
+conda activate warptools_visualiser
 
-python visualise_tiltseries_qt.py \
+python warptools_visualiser.py \
     --tomostar_dir $warp_fs \
     --stack_dir    $warp_ts \
     --frame_dir    $warp_fs \
@@ -119,7 +119,7 @@ python visualise_tiltseries_qt.py \
 ### Single tilt series
 
 ```bash
-python visualise_tiltseries_qt.py \
+python warptools_visualiser.py \
     --stack     $warp_ts/tiltstack/tomogram01/tomogram01.st \
     --tomostar  $warp_fs/tomogram01.tomostar \
     --frame_dir $warp_fs \
@@ -146,21 +146,21 @@ python visualise_tiltseries_qt.py \
 ## Interface
 
 ```
-┌──────────────────────────┬─────────────────────────┬──────────────────┐
-│                          │                         │  Tilt Series     │
-│   Tilt Image             │   Power Spectrum        │  ─────────────   │
-│   (+ motion overlay)     │   (2:1 aspect ratio)    │  [*] Position_28 │
-│                          │                         │  [ ] Position_29 │
-│                          │                         │  ...             │
-├──────────────────────────┴─────────────────────────┤                  │
+┌──────────────────────────┬─────────────────────────┬────────────────── ┐
+│                          │                         │  Tilt Series      │
+│   Tilt Image             │   Power Spectrum        │  ─────────────    │
+│   (+ motion overlay)     │   (2:1 aspect ratio)    │  [*] Position_28  │
+│                          │                         │  [ ] Position_29  │
+│                          │                         │  ...              │
+├──────────────────────────┴─────────────────────────┤                   │
 │   Overview bar  (click to jump to tilt)             │                  │
-├─────────────────────────────────────────────────────┴──────────────────┤
-│   CTF: X.X Å  |  Defocus: X.XXX µm  |  Motion: X.XX Å  |  Series: …  │
-│                        Tilt N/61   ±XX.XX°                              │
-├─────────────────────────────────────────────────────────────────────────┤
-│  < Prev  > Next  Exclude [Ctrl+E]  All On  Save  Next Series  Quit+Save │
-│  [✓] Motion Overlay [Ctrl+M]                                            │
-└─────────────────────────────────────────────────────────────────────────┘
+├─────────────────────────────────────────────────────┴───────────────── ┤
+│   CTF: X.X Å  |  Defocus: X.XXX µm  |  Motion: X.XX Å  |  Series: …    │
+│                        Tilt N/61   ±XX.XX°                             │
+├─────────────────────────────────────────────────────────────────────── ┤
+│  < Prev  > Next  Exclude [Ctrl+E]  All On  Save  Next Series  Quit+Save│
+│  [✓] Motion Overlay [Ctrl+M]                                           │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Tilt image panel

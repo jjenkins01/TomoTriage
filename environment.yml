@@ -1,4 +1,4 @@
-name: warp_tools_visualiser
+name: warptools_visualiser
 channels:
   - conda-forge
   - defaults
