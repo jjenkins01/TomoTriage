@@ -42,16 +42,16 @@ Using the provided `environment.yml`:
 
 ```bash
 conda env create -f environment.yml
-conda activate warp_tools_visualiser
+conda activate warptools_visualiser
 ```
 
 Or manually:
 
 ```bash
-conda create -n warp_tools_visualiser \
+conda create -n warptools_visualiser \
     python=3.11 pyqt numpy mrcfile matplotlib \
     -c conda-forge -y
-conda activate warp_tools_visualiser
+conda activate warptools_visualiser
 ```
 
 ### 3. Install the `warptools_visualiser` command (recommended)
