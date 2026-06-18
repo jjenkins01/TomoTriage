@@ -1,6 +1,6 @@
 # WarpTools Tilt Series Visualiser
 
-An interactive quality control tool for tilt series data processed with[WarpTools](https://github.com/warpem/warp). Inspect tilt images, power spectra, and motion correction results before proceeding to alignment and reconstruction.
+An interactive quality control tool for tilt series data processed with [WarpTools](https://github.com/warpem/warp). Inspect tilt images, power spectra, and motion correction results before proceeding to alignment and reconstruction.
 
 > **This tool was developed with assistance from [Claude](https://claude.ai) (Anthropic) as part of a cryoET subtomogram averaging pipeline.**
 
@@ -11,7 +11,7 @@ An interactive quality control tool for tilt series data processed with[WarpTool
 - **Side-by-side display** of the tilt image and power spectrum
 - **Motion track overlay** drawn spatially on the tilt image — each patch placed at its correct grid position and colour-coded by motion magnitude (green = low, red = high). Toggle on/off with a checkbox or `Ctrl+M`
 - **CTF-colour-coded overview bar** — click any bar to jump directly to that tilt
-- **Exclusion** of bad tilts writes to both the `.tomostar` and <UseTilt>` in the tilt-series XML; previous exclusions are restored automatically on next load
+- **Exclusion** of bad tilts writes to both the `.tomostar` and `<UseTilt>` in the tilt-series XML; previous exclusions are restored automatically on next load
 - **Scrollable tilt series list** — switch between datasets with a click
 - **Per-tilt metadata** — CTF fit (Å), defocus (µm), and motion (Å) from WarpTools per-frame XML
 
@@ -55,10 +55,10 @@ pip install -e .
 The `-e` (editable) flag means `git pull` updates take effect immediately without reinstalling. After this you can run:
 
 ```bash
-warptools_visualiser --tomostar_dir $WARP --stack_dir $warp_ts ...
+warptools_visualiser --tomostar_dir $warp_fs --stack_dir $warp_ts ...
 ```
 
-> If you prefer not to install, you can always run the script directly with`python warptools_visualiser.py --tomostar_dir $WARP ...`
+> If you prefer not to install, you can always run the script directly with `python warptools_visualiser.py --tomostar_dir $warp_fs ...`
 
 ### 4. Verify the installation
 
@@ -91,7 +91,7 @@ A plain install copies the code into the environment, so after pulling you must 
 ```bash
 cd warptools_visualiser
 git pull origin main
-conda activate warp_tools_visualiser
+conda activate warptools_visualiser
 pip install . --upgrade
 ```
 
@@ -194,9 +194,9 @@ warptools_visualiser \
 
 | Argument | Description |
 |---|---|
-| `--tomostar_dir DIR` | Directory containing `.tomostar` files — typically `$WARP` |
+| `--tomostar_dir DIR` | Directory containing `.tomostar` files — typically `$warp_fs` |
 | `--stack_dir DIR` | Directory containing `tiltstack/` subdirs — typically `$warp_ts` |
-| `--frame_dir DIR` | Frame-series dir (`$WARP`) — per-frame XMLs, `powerspectrum/`, `average/` |
+| `--frame_dir DIR` | Frame-series dir (`$warp_fs`) — per-frame XMLs, `powerspectrum/`, `average/` |
 | `--xml_dir DIR` | Directory containing tilt-series XML files — typically `$warp_ts` |
 | `--stack ST` | Single tilt series stack (`.st` or `.mrc`) — single-file mode |
 | `--tomostar STAR` | Tomostar file — required with `--stack` |
@@ -209,7 +209,7 @@ warptools_visualiser \
 
 ## Interface
 
-![warptools_visualiser_gui](/Users/fbsjje/process/warptools_visualiser_original_deposition/docs/images/warptools_visualiser_gui.png)
+![warptools_visualiser GUI](docs/images/warptools_visualiser_gui.png)
 
 ### Tilt image panel
 
@@ -236,7 +236,7 @@ Displays the CTF power spectrum from `powerspectrum/` with square-root scaling. 
 
 ### Overview bar
 
-One coloured bar per tilt. **Click any bar to jump directly to that tilt.**Colour coding (priority order):
+One coloured bar per tilt. **Click any bar to jump directly to that tilt.** Colour coding (priority order):
 
 | Colour | Meaning |
 |---|---|
@@ -274,7 +274,7 @@ Lists all tilt series found in the processing directory. Click a name to switch 
 | `Ctrl+Q` | Save and quit |
 | `Ctrl+R` | Reset — mark all tilts as included |
 
-> **Why Ctrl+E and not just E?** The tilt series list widget consumes single-letter keypresses for its built-in search, so bare `E` never reaches the window's key handler. `Ctrl+<letter>` combinations bypassthis.
+> **Why Ctrl+E and not just E?** The tilt series list widget consumes single-letter keypresses for its built-in search, so bare `E` never reaches the window's key handler. `Ctrl+<letter>` combinations bypass this.
 
 ---
 
@@ -283,7 +283,7 @@ Lists all tilt series found in the processing directory. Click a name to switch 
 When you press **Save** or **Quit+Save**, exclusions are written to the
 tilt-series XML for the current series:
 
-**Tilt-series XML `<UseTilt>`** — set to `False` for each excluded tilt and`True` for included tilts. This is WarpTools' native exclusion mechanism:`ts_stack`, `ts_ctf`, and `ts_reconstruct` all read `<UseTilt>` and skip the tilts marked `False`. The XML is written in WarpTools' exact format (first value on the opening-tag line, last value on the closing-tag line) so it parses correctly.
+**Tilt-series XML `<UseTilt>`** — set to `False` for each excluded tilt and `True` for included tilts. This is WarpTools' native exclusion mechanism: `ts_stack`, `ts_ctf`, and `ts_reconstruct` all read `<UseTilt>` and skip the tilts marked `False`. The XML is written in WarpTools' exact format (first value on the opening-tag line, last value on the closing-tag line) so it parses correctly.
 
 > **Note:** the visualiser does **not** modify the `.tomostar` file. Earlier versions removed excluded rows from the tomostar, but this shortened it relative to the full-length `<UseTilt>` list and broke `ts_stack`. Keeping the tomostar intact and recording exclusions only in `<UseTilt>` is the robust approach and round-trips correctly across sessions.
 

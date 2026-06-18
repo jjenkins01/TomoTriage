@@ -169,7 +169,39 @@ def write_tomostar(path, col_names, rows):
     print(f"  Tomostar saved ({len(rows)} tilts): {path}")
 
 
-def update_xml_usetilt(xml_path, excluded):
+def _read_xml_angle_list(root, tag):
+    """Return list of float values from a newline-separated XML element."""
+    node = root.find('.//' + tag)
+    if node is None or not node.text:
+        return []
+    out = []
+    for v in node.text.split('\n'):
+        v = v.strip()
+        if v:
+            try:
+                out.append(float(v))
+            except ValueError:
+                pass
+    return out
+
+
+def _angle_key(angle):
+    """Round an angle to 0.1 deg for robust matching between files."""
+    return round(float(angle), 1)
+
+
+def update_xml_usetilt(xml_path, excluded, tilt_angles=None):
+    """
+    Write exclusion state to <UseTilt> in the tilt-series XML.
+
+    The XML's <UseTilt>/<Angles> are ordered by tilt angle and may contain
+    MORE entries than the (possibly reduced) tilt stack. The `excluded` list
+    is indexed by STACK position, so we map between the two by tilt angle
+    using `tilt_angles` (the per-stack-tilt angles, same order as `excluded`).
+
+    XML angles with no matching stack tilt keep their existing UseTilt value.
+    If `tilt_angles` is None we fall back to positional mapping (legacy).
+    """
     if not xml_path or not os.path.exists(xml_path):
         print(f"  [WARN] XML not found: {xml_path}"); return
     try:
@@ -179,11 +211,31 @@ def update_xml_usetilt(xml_path, excluded):
         if node is None:
             print(f"  [WARN] No <UseTilt> in {xml_path}"); return
         existing = [v.strip() for v in (node.text or '').split('\n') if v.strip()]
-        updated = []
-        for i in range(max(len(existing), len(excluded))):
-            if i < len(excluded) and excluded[i]: updated.append('False')
-            elif i < len(existing):              updated.append(existing[i])
-            else:                                updated.append('True')
+        xml_angles = _read_xml_angle_list(root, 'Angles')
+
+        if tilt_angles is not None and xml_angles and \
+                len(xml_angles) == len(existing):
+            # Angle-based mapping: build {angle_key: excluded} from the stack
+            excl_by_angle = {}
+            for i, ang in enumerate(tilt_angles):
+                if i < len(excluded):
+                    excl_by_angle[_angle_key(ang)] = excluded[i]
+            updated = []
+            for j, ang in enumerate(xml_angles):
+                key = _angle_key(ang)
+                if key in excl_by_angle:
+                    updated.append('False' if excl_by_angle[key] else 'True')
+                else:
+                    # Tilt not present in the stack — keep prior value
+                    updated.append(existing[j] if j < len(existing) else 'True')
+        else:
+            # Legacy positional mapping (orderings assumed identical)
+            updated = []
+            for i in range(max(len(existing), len(excluded))):
+                if i < len(excluded) and excluded[i]: updated.append('False')
+                elif i < len(existing):              updated.append(existing[i])
+                else:                                updated.append('True')
+
         # WarpTools format: first value immediately after <UseTilt>, values
         # separated by newlines, last value immediately before </UseTilt>.
         # No leading/trailing newline and NO ET.indent() reformatting, both of
@@ -201,16 +253,41 @@ def update_xml_usetilt(xml_path, excluded):
         print(f"  [ERROR] XML: {e}")
 
 
-def read_usetilt_from_xml(xml_path, n):
+def read_usetilt_from_xml(xml_path, n, tilt_angles=None):
+    """
+    Read exclusion state from <UseTilt>, returning a list of length `n`
+    indexed by STACK position (True = excluded).
+
+    The XML is ordered by tilt angle and may have more entries than the stack.
+    If `tilt_angles` (per-stack-tilt angles, same order as the returned list)
+    is given, we map by angle. Otherwise we fall back to positional mapping.
+    """
     excluded = [False] * n
     if not xml_path or not os.path.exists(xml_path): return excluded
     try:
         tree = ET.parse(xml_path)
-        node = tree.getroot().find('.//UseTilt')
+        root = tree.getroot()
+        node = root.find('.//UseTilt')
         # NB: an ElementTree element with no children is falsy, so we must
         # test 'is not None' rather than a plain truthiness check here.
-        if node is not None and node.text:
-            vals = [v.strip() for v in node.text.split('\n') if v.strip()]
+        if node is None or not node.text:
+            return excluded
+        vals = [v.strip() for v in node.text.split('\n') if v.strip()]
+        xml_angles = _read_xml_angle_list(root, 'Angles')
+
+        if tilt_angles is not None and xml_angles and \
+                len(xml_angles) == len(vals):
+            # Build {angle_key: excluded} from the XML, then look up each
+            # stack tilt's angle
+            excl_by_angle = {}
+            for ang, v in zip(xml_angles, vals):
+                excl_by_angle[_angle_key(ang)] = (v.lower() == 'false')
+            for i, ang in enumerate(tilt_angles[:n]):
+                key = _angle_key(ang)
+                if key in excl_by_angle:
+                    excluded[i] = excl_by_angle[key]
+        else:
+            # Legacy positional mapping
             for i, v in enumerate(vals[:n]):
                 excluded[i] = v.lower() == 'false'
     except Exception: pass
@@ -623,7 +700,10 @@ class MainWindow(QMainWindow):
         n = stack.shape[0]
         movies  = get_movie_names(col_names, rows)
         angles  = get_tilt_angles(col_names, rows)
-        excluded = read_usetilt_from_xml(xp, n)
+        # Map exclusions by tilt angle: the XML <UseTilt> is ordered by angle
+        # and may have more entries than this (possibly reduced) stack, so a
+        # positional mapping would be wrong.
+        excluded = read_usetilt_from_xml(xp, n, tilt_angles=angles[:n])
 
         # Per-frame XML is cheap (small files) — read up front for the
         # overview CTF colouring. Motion JSON can be large, so resolve only
@@ -1016,7 +1096,8 @@ class MainWindow(QMainWindow):
         # letting <UseTilt> drive exclusion keeps everything consistent and
         # round-trips correctly.
         if s['ts_xml']:
-            update_xml_usetilt(s['ts_xml'], s['excluded'])
+            update_xml_usetilt(s['ts_xml'], s['excluded'],
+                               tilt_angles=s['angles'])
         else:
             print(f"  [WARN] No tilt-series XML for {s['name']} — "
                   "cannot save exclusions")
