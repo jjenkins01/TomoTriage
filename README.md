@@ -42,23 +42,108 @@ Using the provided `environment.yml`:
 
 ```bash
 conda env create -f environment.yml
-conda activate warptools_visualiser
+conda activate warp_tools_visualiser
 ```
 
 Or manually:
 
 ```bash
-conda create -n warptools_visualiser \
+conda create -n warp_tools_visualiser \
     python=3.11 pyqt numpy mrcfile matplotlib \
     -c conda-forge -y
-conda activate warptools_visualiser
+conda activate warp_tools_visualiser
 ```
 
-### 3. Verify the installation
+### 3. Install the `warptools_visualiser` command (recommended)
+
+Installing the package with `pip` registers a `warptools_visualiser` command
+so you can launch it from anywhere without typing `python` or the full path:
+
+```bash
+pip install -e .
+```
+
+The `-e` (editable) flag means `git pull` updates take effect immediately
+without reinstalling. After this you can run:
+
+```bash
+warptools_visualiser --tomostar_dir $WARP --stack_dir $warp_ts ...
+```
+
+> If you prefer not to install, you can always run the script directly with
+> `python warptools_visualiser.py --tomostar_dir $WARP ...`
+
+### 4. Verify the installation
 
 ```bash
 python -c "from PyQt5.QtWidgets import QApplication; print('PyQt5 OK')"
+warptools_visualiser --help
 ```
+
+---
+
+## Updating
+
+If you already have a previous version installed and want the latest release
+from GitHub:
+
+### If you installed with `pip install -e .` (editable mode)
+
+This is the simplest case — the editable install points directly at your
+local clone, so a `git pull` is all that is needed. The `warptools_visualiser`
+command picks up the new code automatically.
+
+```bash
+cd warptools_visualiser     # your local clone
+git pull origin main
+```
+
+> `git` does not require the conda environment to be active. You only need the
+> environment active when you actually run `warptools_visualiser`.
+
+### If you installed with a regular `pip install .` (non-editable)
+
+A plain install copies the code into the environment, so after pulling you
+must reinstall for the changes to take effect:
+
+```bash
+cd warptools_visualiser
+git pull origin main
+conda activate warp_tools_visualiser
+pip install . --upgrade
+```
+
+### If you only downloaded the script (no pip install)
+
+Replace your local `warptools_visualiser.py` with the latest version from the
+repository, or re-clone:
+
+```bash
+cd warptools_visualiser
+git pull origin main
+```
+
+then run it directly with `python warptools_visualiser.py ...`.
+
+### If the dependencies changed
+
+The conda environment only needs to be recreated if `environment.yml` has
+changed (rare). If a new release notes a dependency change, update with:
+
+```bash
+conda env update -f environment.yml --prune
+```
+
+### Checking your version
+
+```bash
+cd warptools_visualiser
+git log --oneline -1        # shows the latest commit you have
+git tag --points-at HEAD    # shows the release tag, if any
+```
+
+Compare against the [releases page](https://github.com/jjenkins01/warptools_visualiser/releases)
+to see whether a newer version is available.
 
 ---
 
@@ -75,7 +160,7 @@ python -c "from PyQt5.QtWidgets import QApplication; print('PyQt5 OK')"
 
 The visualiser expects standard WarpTools output structure, here's an example with a single tomogram called tomogram01:
 
-```
+```bash
 warp_frameseries                                 Frame-series processing dir
 ├── tomogram01.tomostar                          Tilt series metadata (this can also be in a separate directory if you like)
 ├── tomogram01_001_*_Fractions.xml               Per-frame CTF / motion XML
@@ -107,32 +192,32 @@ warp_ts=/path/to/warp_tiltseries
 ### Batch mode — all tilt series in a directory
 
 ```bash
-conda activate warptools_visualiser
+conda activate warp_tools_visualiser
 
-python warptools_visualiser.py \
-    --tomostar_dir $warp_fs \
+warptools_visualiser \
+    --tomostar_dir $WARP    \
     --stack_dir    $warp_ts \
-    --frame_dir    $warp_fs \
+    --frame_dir    $WARP    \
     --xml_dir      $warp_ts
 ```
 
 ### Single tilt series
 
 ```bash
-python warptools_visualiser.py \
-    --stack     $warp_ts/tiltstack/tomogram01/tomogram01.st \
-    --tomostar  $warp_fs/tomogram01.tomostar \
-    --frame_dir $warp_fs \
-    --xml       $warp_ts/tomogram01.xml
+warptools_visualiser \
+    --stack     $warp_ts/tiltstack/Position_28/Position_28.st \
+    --tomostar  $WARP/Position_28.tomostar \
+    --frame_dir $WARP \
+    --xml       $warp_ts/Position_28.xml
 ```
 
 ### All arguments
 
 | Argument | Description |
 |---|---|
-| `--tomostar_dir DIR` | Directory containing `.tomostar` files — typically `$warp_fs` |
+| `--tomostar_dir DIR` | Directory containing `.tomostar` files — typically `$WARP` |
 | `--stack_dir DIR` | Directory containing `tiltstack/` subdirs — typically `$warp_ts` |
-| `--frame_dir DIR` | Frame-series dir (`$warp_fs`) — per-frame XMLs, `powerspectrum/`, `average/` |
+| `--frame_dir DIR` | Frame-series dir (`$WARP`) — per-frame XMLs, `powerspectrum/`, `average/` |
 | `--xml_dir DIR` | Directory containing tilt-series XML files — typically `$warp_ts` |
 | `--stack ST` | Single tilt series stack (`.st` or `.mrc`) — single-file mode |
 | `--tomostar STAR` | Tomostar file — required with `--stack` |
@@ -146,21 +231,21 @@ python warptools_visualiser.py \
 ## Interface
 
 ```
-┌──────────────────────────┬─────────────────────────┬────────────────── ┐
-│                          │                         │  Tilt Series      │
-│   Tilt Image             │   Power Spectrum        │  ─────────────    │
-│   (+ motion overlay)     │   (2:1 aspect ratio)    │  [*] Position_28  │
-│                          │                         │  [ ] Position_29  │
-│                          │                         │  ...              │
-├──────────────────────────┴─────────────────────────┤                   │
+┌──────────────────────────┬─────────────────────────┬──────────────────┐
+│                          │                         │  Tilt Series     │
+│   Tilt Image             │   Power Spectrum        │  ─────────────   │
+│   (+ motion overlay)     │   (2:1 aspect ratio)    │  [*] Position_28 │
+│                          │                         │  [ ] Position_29 │
+│                          │                         │  ...             │
+├──────────────────────────┴─────────────────────────┤                  │
 │   Overview bar  (click to jump to tilt)             │                  │
-├─────────────────────────────────────────────────────┴───────────────── ┤
-│   CTF: X.X Å  |  Defocus: X.XXX µm  |  Motion: X.XX Å  |  Series: …    │
-│                        Tilt N/61   ±XX.XX°                             │
-├─────────────────────────────────────────────────────────────────────── ┤
-│  < Prev  > Next  Exclude [Ctrl+E]  All On  Save  Next Series  Quit+Save│
-│  [✓] Motion Overlay [Ctrl+M]                                           │
-└────────────────────────────────────────────────────────────────────────┘
+├─────────────────────────────────────────────────────┴──────────────────┤
+│   CTF: X.X Å  |  Defocus: X.XXX µm  |  Motion: X.XX Å  |  Series: …  │
+│                        Tilt N/61   ±XX.XX°                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│  < Prev  > Next  Exclude [Ctrl+E]  All On  Save  Next Series  Quit+Save │
+│  [✓] Motion Overlay [Ctrl+M]                                            │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Tilt image panel
@@ -179,6 +264,15 @@ patch boundaries. Tracks are colour-coded by arc-length:
 | Red / orange | High |
 
 Toggle with the **Motion Overlay** checkbox or `Ctrl+M`.
+
+Two additional controls refine the motion display:
+
+- **Local only** — subtracts the global mean trajectory (averaged across all
+  patches) from each patch, leaving only the local, non-global component of
+  the motion. This matches the "only local motion" option in the Warp GUI and
+  is useful for spotting localised beam-induced movement.
+- **Scale** — magnifies the drawn tracks (1×–100×) so small displacements are
+  easier to see, without changing the underlying data.
 
 ### Power spectrum panel
 
@@ -240,12 +334,44 @@ keeping the WarpTools processing state consistent.
 Both files receive a timestamped backup before writing:
 
 ```
-tomogram01.tomostar.backup_20260527_103042
-tomogram01.xml.backup_20260527_103042
+Position_28.tomostar.backup_20260527_103042
+Position_28.xml.backup_20260527_103042
 ```
 
 **Previous exclusions are restored automatically** — the `<UseTilt>` field
 is read from the XML every time a series is loaded.
+
+---
+
+## Troubleshooting
+
+**`No module named 'PyQt5'`**
+Recreate the environment following the installation steps above.
+
+**Window is blank / no display**
+Verify X11 forwarding is active:
+```bash
+echo $DISPLAY    # should show e.g. localhost:10.0
+```
+Reconnect with `ssh -X` or `ssh -Y` if empty.
+
+**Power spectrum shows "not found"**
+Check that `--frame_dir` points to the directory containing the
+`powerspectrum/` subdirectory.
+
+**Motion overlay not appearing**
+Motion JSON files are searched in `$WARP/` and `$WARP/average/`. Locate
+them with:
+```bash
+find $WARP -name "*_motion.json" | head -3
+```
+
+**Some motion files missing (e.g. 57/61)**
+Tilts that failed `fs_motion_and_ctf` have no motion file. This is
+expected; those tilts show no overlay and are good candidates for exclusion.
+
+**Qt GLX / session manager warnings**
+Harmless X11 messages, suppressed automatically by the script.
 
 ---
 

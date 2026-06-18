@@ -4,6 +4,34 @@ All notable changes to the WarpTools Tilt Series Visualiser are documented here.
 
 ---
 
+## [1.2.0] - 2026-06-17
+
+### Added
+- **Command-line entry point** — the tool can now be installed with
+  `pip install -e .` (via the new `pyproject.toml`), which registers a
+  `warptools_visualiser` command so it can be launched from anywhere without
+  typing `python` or the full script path.
+- **"Local only" motion mode** — a checkbox that subtracts the global mean
+  trajectory from each patch, showing only the local (non-global) component of
+  the beam-induced motion. Mirrors the "only local motion" option in the
+  Warp GUI.
+- **Motion track scale control** — a dropdown (1×–100×) to magnify the drawn
+  motion tracks for easier inspection of small displacements.
+
+### Fixed
+- **Laggy navigation after switching series** — the tilt series list widget
+  was retaining keyboard focus after a click, so the arrow keys scrolled the
+  list instead of changing tilts until the user clicked elsewhere. The list
+  now uses click-only focus and keyboard focus is returned to the main window
+  after every series change.
+
+### Changed
+- **Faster series switching** — motion JSON files are now loaded lazily (only
+  when a tilt is first viewed) and cached, rather than reading all of them up
+  front. This noticeably speeds up the transition between datasets.
+
+---
+
 ## [1.1.0] - 2026-05-27
 
 ### Fixed

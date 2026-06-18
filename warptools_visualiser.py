@@ -13,8 +13,10 @@ Layout
   Info   : CTF fit, defocus, motion per tilt from per-frame XML
 
 Motion tracks are drawn spatially — each patch at its correct grid position
-on the image — and colour-coded by arc-length (green=low, red=high).
-Toggle the overlay with the checkbox in the button bar.
+on the image — and colour-coded by arc-length (green=low, red=high). Toggle
+the overlay with the checkbox in the button bar. "Local only" subtracts the
+global mean trajectory to show only local (non-global) motion, and the Scale
+dropdown magnifies the tracks for easier inspection.
 
 Exclusions write to both .tomostar and <UseTilt> in tilt-series XML.
 Previous exclusions are restored from XML on load.
@@ -25,11 +27,15 @@ Requires
 
 Usage
 -----
-  python visualise_tiltseries_qt.py \\
-      --tomostar_dir $warp_fs       \\
+  # If installed via pip (provides the warptools_visualiser command):
+  warptools_visualiser \\
+      --tomostar_dir $WARP       \\
       --stack_dir    $warp_ts    \\
-      --frame_dir    $warp_fs       \\
+      --frame_dir    $WARP       \\
       --xml_dir      $warp_ts
+
+  # Or run the script directly:
+  python warptools_visualiser.py --tomostar_dir $WARP ...
 
 Keyboard shortcuts
 ------------------
@@ -55,7 +61,7 @@ import mrcfile
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QListWidget,
-    QPushButton, QCheckBox, QHBoxLayout, QVBoxLayout,
+    QPushButton, QCheckBox, QComboBox, QHBoxLayout, QVBoxLayout,
     QSizePolicy, QSplitter, QStatusBar
 )
 from PyQt5.QtGui import (
@@ -313,11 +319,13 @@ class ImageLabel(QLabel):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._raw_pixmap  = None
-        self._excluded    = False
-        self._candidate   = False
-        self._motion_data = None
-        self._show_motion = True
+        self._raw_pixmap   = None
+        self._excluded     = False
+        self._candidate    = False
+        self._motion_data  = None
+        self._show_motion  = True
+        self._local_motion = False   # subtract mean shift (show only local)
+        self._motion_scale = 1.0     # display magnification of tracks
         self.setMinimumSize(200, 150)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setAlignment(Qt.AlignCenter)
@@ -344,6 +352,14 @@ class ImageLabel(QLabel):
 
     def set_show_motion(self, show):
         self._show_motion = show
+        self._update_display()
+
+    def set_local_motion(self, local):
+        self._local_motion = local
+        self._update_display()
+
+    def set_motion_scale(self, scale):
+        self._motion_scale = scale
         self._update_display()
 
     # ── Internal rendering ─────────────────────────────────────────────────
@@ -393,6 +409,10 @@ class ImageLabel(QLabel):
         Draw motion patch trajectories spatially on the image using QPainter.
         Each patch is positioned at its grid location; track is colour-coded
         by arc-length (green = low motion, red = high motion).
+
+        If local_motion is enabled, the mean trajectory across all patches is
+        subtracted from each patch so only the local (non-global) component is
+        shown — matching the "only local motion" option in the Warp GUI.
         """
         mdata = self._motion_data
         patches = {}
@@ -409,22 +429,35 @@ class ImageLabel(QLabel):
         cell_w = W / n_cols
         cell_h = H / n_rows
 
+        # Build per-patch x/y arrays, optionally removing the global mean
+        # trajectory (local motion mode)
+        xy = {}
+        n_frames = min(len(t['x']) for t in patches.values())
+        for k, t in patches.items():
+            xy[k] = (np.array(t['x'][:n_frames]),
+                     np.array(t['y'][:n_frames]))
+
+        if self._local_motion:
+            mean_x = np.mean([v[0] for v in xy.values()], axis=0)
+            mean_y = np.mean([v[1] for v in xy.values()], axis=0)
+            xy = {k: (x - mean_x, y - mean_y) for k, (x, y) in xy.items()}
+
         # Arc-length per patch for colour normalisation
         arc_lengths = {}
-        for (row, col), track in patches.items():
-            x = np.array(track['x']); y = np.array(track['y'])
-            arc_lengths[(row, col)] = float(
+        for k, (x, y) in xy.items():
+            arc_lengths[k] = float(
                 np.sum(np.sqrt(np.diff(x)**2 + np.diff(y)**2)))
         min_arc = min(arc_lengths.values())
         max_arc = max(arc_lengths.values())
         arc_range = max(max_arc - min_arc, 1e-6)
 
-        # Scale tracks to fit within 40% of cell
+        # Scale tracks to fit within 40% of cell, times the user scale factor
         all_disp = []
-        for tr in patches.values():
-            all_disp.extend(tr['x'] + tr['y'])
+        for (x, y) in xy.values():
+            all_disp.extend(list(x) + list(y))
         max_disp = max(abs(v) for v in all_disp) if all_disp else 1.0
-        scale = 0.40 * min(cell_w, cell_h) / max(max_disp, 1e-6)
+        scale = (0.40 * min(cell_w, cell_h) / max(max_disp, 1e-6)
+                 * self._motion_scale)
 
         # Faint grid lines
         painter.setOpacity(0.18)
@@ -438,12 +471,12 @@ class ImageLabel(QLabel):
 
         painter.setOpacity(0.88)
 
-        for (row, col), track in sorted(patches.items()):
+        for (row, col) in sorted(xy.keys()):
             cx = (col + 0.5) * cell_w
             cy = (row + 0.5) * cell_h   # row 0 at top
 
-            x = np.array(track['x']) * scale
-            y = np.array(track['y']) * scale
+            x = xy[(row, col)][0] * scale
+            y = xy[(row, col)][1] * scale
 
             norm  = (arc_lengths[(row, col)] - min_arc) / arc_range
             color = _motion_color(norm)
@@ -586,7 +619,12 @@ class MainWindow(QMainWindow):
         movies  = get_movie_names(col_names, rows)
         angles  = get_tilt_angles(col_names, rows)
         excluded = read_usetilt_from_xml(xp, n)
-        frame_meta = []; motion_data = []
+
+        # Per-frame XML is cheap (small files) — read up front for the
+        # overview CTF colouring. Motion JSON can be large, so resolve only
+        # the file *paths* now and load each lazily on first view.
+        frame_meta  = []
+        motion_paths = []
         for mv in movies[:n]:
             xml_f = mot_f = None
             if self.frame_dir:
@@ -598,8 +636,9 @@ class MainWindow(QMainWindow):
                     cm = os.path.join(md, stem + '_motion.json')
                     if os.path.exists(cm): mot_f = cm; break
             frame_meta.append(read_frame_xml(xml_f))
-            motion_data.append(load_motion_json(mot_f))
-        n_mot = sum(1 for m in motion_data if m is not None)
+            motion_paths.append(mot_f)
+
+        n_mot = sum(1 for m in motion_paths if m is not None)
         print(f"  Motion files: {n_mot}/{n}")
         self._cache[idx] = dict(
             name=name, tomostar_path=tp, ts_xml=xp,
@@ -607,8 +646,20 @@ class MainWindow(QMainWindow):
             excluded=excluded,
             flagged=auto_flag_candidates(stack, self.sigma),
             angles=angles[:n], movies=movies[:n],
-            frame_meta=frame_meta, motion_data=motion_data,
+            frame_meta=frame_meta,
+            motion_paths=motion_paths,        # resolved paths
+            motion_cache={},                  # idx -> parsed JSON (lazy)
         )
+
+    def _get_motion(self, ti):
+        """Lazily load and cache the motion JSON for tilt ti of current series."""
+        s = self._s()
+        if ti in s['motion_cache']:
+            return s['motion_cache'][ti]
+        path = s['motion_paths'][ti] if ti < len(s['motion_paths']) else None
+        data = load_motion_json(path)
+        s['motion_cache'][ti] = data
+        return data
 
     def _s(self): return self._cache[self.series_idx]
 
@@ -617,6 +668,8 @@ class MainWindow(QMainWindow):
     def _build_ui(self):
         self.setStyleSheet(f"background-color: {C_BG}; color: {C_TEXT};")
         self.resize(1600, 950)
+        # Accept keyboard focus so arrow keys / shortcuts always work
+        self.setFocusPolicy(Qt.StrongFocus)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -665,6 +718,9 @@ class MainWindow(QMainWindow):
         self.series_list_widget.setCurrentRow(0)
         self.series_list_widget.currentRowChanged.connect(
             self._on_series_changed)
+        # Click-to-select but never hold keyboard focus, so arrow keys always
+        # reach the main window's keyPressEvent
+        self.series_list_widget.setFocusPolicy(Qt.ClickFocus)
         right_layout.addWidget(self.series_list_widget)
         right.setMinimumWidth(180); right.setMaximumWidth(280)
         splitter.addWidget(right)
@@ -729,6 +785,37 @@ class MainWindow(QMainWindow):
             lambda s: self.img_tilt.set_show_motion(s == Qt.Checked))
         btn_row.addWidget(self._motion_check)
 
+        # Local-motion-only checkbox
+        self._local_check = QCheckBox("Local only")
+        self._local_check.setChecked(False)
+        self._local_check.setStyleSheet(self._motion_check.styleSheet())
+        self._local_check.stateChanged.connect(
+            lambda s: self.img_tilt.set_local_motion(s == Qt.Checked))
+        btn_row.addWidget(self._local_check)
+
+        # Motion scale dropdown
+        scale_lbl = QLabel("Scale:")
+        scale_lbl.setStyleSheet(
+            f"color: {C_TEXT}; font-size: 12px; padding: 6px 2px 6px 8px;")
+        btn_row.addWidget(scale_lbl)
+        self._scale_combo = QComboBox()
+        for s in ['1x', '2x', '5x', '10x', '20x', '50x', '100x']:
+            self._scale_combo.addItem(s)
+        self._scale_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {C_ACCENT}; color: {C_TEXT};
+                border: 1px solid #334155; border-radius: 4px;
+                padding: 4px 8px; font-size: 12px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {C_PANEL}; color: {C_TEXT};
+                selection-background-color: {C_HOVER};
+            }}
+        """)
+        self._scale_combo.currentTextChanged.connect(
+            lambda t: self.img_tilt.set_motion_scale(float(t.rstrip('x'))))
+        btn_row.addWidget(self._scale_combo)
+
         root.addLayout(btn_row, stretch=0)
 
     # ── Keyboard shortcuts (keyPressEvent avoids QListWidget focus issue) ──
@@ -760,7 +847,7 @@ class MainWindow(QMainWindow):
         excl  = s['excluded'][ti]
         cand  = s['flagged'][ti]
         meta  = s['frame_meta'][ti]  if ti < len(s['frame_meta'])  else {}
-        mdata = s['motion_data'][ti] if ti < len(s['motion_data']) else None
+        mdata = self._get_motion(ti)
 
         # Tilt image with motion overlay
         self.img_tilt.set_array(img, self.clo, self.chi,
@@ -813,6 +900,9 @@ class MainWindow(QMainWindow):
         if idx < 0 or idx == self.series_idx: return
         self.series_idx = idx; self.tilt_idx = 0
         self._load_series(idx); self._refresh()
+        # Return focus to the main window so arrow keys / shortcuts work
+        # immediately without needing to click elsewhere first
+        self.setFocus()
 
     def _on_overview_click(self, idx):
         if idx != self.tilt_idx:
@@ -859,6 +949,7 @@ class MainWindow(QMainWindow):
         if nxt < len(self.series_list):
             self.series_idx = nxt; self.tilt_idx = 0
             self._load_series(nxt); self._refresh()
+            self.setFocus()
         else:
             self.statusBar().showMessage("Last series.", 2000)
 

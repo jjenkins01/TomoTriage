@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "warptools_visualiser"
+version = "1.2.0"
+description = "An interactive quality control tool for tilt series data processed with WarpTools"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Joshua Jenkins" },
+]
+dependencies = [
+    "numpy",
+    "mrcfile",
+    "matplotlib",
+    "PyQt5",
+]
+
+[project.urls]
+Repository = "https://github.com/jjenkins01/warptools_visualiser"
+
+# Expose the GUI as a command-line entry point so users can simply run
+#   warptools_visualiser --tomostar_dir ... --stack_dir ...
+# instead of  python /full/path/to/warptools_visualiser.py
+[project.scripts]
+warptools_visualiser = "warptools_visualiser:main"
+
+# Treat the single-file module as a py-module rather than a package
+[tool.setuptools]
+py-modules = ["warptools_visualiser"]
