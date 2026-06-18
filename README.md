@@ -209,7 +209,7 @@ warptools_visualiser \
 
 ## Interface
 
-![(warptools_visualiser/docs/images/warptools_visualiser_gui.png)]
+![warptools visualiser GUI](warptools_visualiser/docs/images/warptools_visualiser_gui.png)
 
 ### Tilt image panel
 
