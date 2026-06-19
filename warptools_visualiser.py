@@ -166,18 +166,6 @@ def parse_tomostar(path):
     return col_names, rows
 
 
-def write_tomostar(path, col_names, rows):
-    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    shutil.copy2(path, path + f'.backup_{ts}')
-    with open(path, 'w') as f:
-        f.write('\ndata_\n\nloop_\n')
-        for i, c in enumerate(col_names):
-            f.write(f'{c} #{i+1}\n')
-        for r in rows:
-            f.write('  ' + '   '.join(r) + '\n')
-    print(f"  Tomostar saved ({len(rows)} tilts): {path}")
-
-
 def _read_xml_angle_list(root, tag):
     """Return list of float values from a newline-separated XML element."""
     node = root.find('.//' + tag)
@@ -252,12 +240,19 @@ def update_xml_usetilt(xml_path, excluded, tilt_angles=None):
         # needed for each tilt").
         node.text = '\n'.join(updated)
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        shutil.copy2(xml_path, xml_path + f'.backup_{ts}')
+        # Back up the current on-disk XML into an xml_original_backups/ subdir
+        # alongside the XML, rather than cluttering the XML directory itself.
+        backup_dir = os.path.join(os.path.dirname(os.path.abspath(xml_path)),
+                                  'xml_original_backups')
+        os.makedirs(backup_dir, exist_ok=True)
+        backup_name = os.path.basename(xml_path) + f'.backup_{ts}'
+        shutil.copy2(xml_path, os.path.join(backup_dir, backup_name))
         xml_string = ET.tostring(root, encoding='unicode')
         with open(xml_path, 'w', encoding='utf-8') as f:
             f.write('<?xml version="1.0" encoding="utf-8"?>\n')
             f.write(xml_string)
         print(f"  XML updated: {xml_path}")
+        print(f"  Backup saved: {os.path.join(backup_dir, backup_name)}")
     except Exception as e:
         print(f"  [ERROR] XML: {e}")
 
@@ -735,6 +730,17 @@ class MainWindow(QMainWindow):
         self.series_idx  = 0
         self.tilt_idx    = 0
         self._cache      = {}
+
+        # Create the xml_original_backups/ directory up front for every XML
+        # location in the series list, so it exists as soon as the tool runs.
+        for _, xp in self.series_list:
+            if xp:
+                bdir = os.path.join(os.path.dirname(os.path.abspath(xp)),
+                                    'xml_original_backups')
+                try:
+                    os.makedirs(bdir, exist_ok=True)
+                except OSError as e:
+                    print(f"  [WARN] Could not create backup dir {bdir}: {e}")
 
         self._load_series(0)
         self._build_ui()

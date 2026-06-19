@@ -142,21 +142,24 @@ Compare against the [releases page](https://github.com/jjenkins01/warptools_visu
 The visualiser expects standard WarpTools output structure, here's an example with a single tomogram called tomogram01:
 
 ```
-warp_frameseries                                Frame-series processing dir
+warp_frameseries                                 Frame-series processing dir
 ├── tomogram01.tomostar                          Tilt series metadata (can be in a separate directory if you like)
-├── tomogram01_001_*_Fractions.xml              Per-frame CTF / motion XML
+├── tomogram01_001_*_Fractions.xml               Per-frame CTF / motion XML
 ├── powerspectrum/
-│   └── tomogram01_001_*_Fractions.mrc          Power spectrum per tilt
+│   └── tomogram01_001_*_Fractions.mrc           Power spectrum per tilt
 └── average/
-    ├── tomogram01_001_*_Fractions.mrc          Per-tilt motion-corrected average (DISPLAYED by the visualiser)
-    └── tomogram01_001_*_Fractions_motion.json  Motion tracks per tilt
+    ├── tomogram01_001_*_Fractions.mrc           Per-tilt motion-corrected average (DISPLAYED by the visualiser)
+    └── tomogram01_001_*_Fractions_motion.json   Motion tracks per tilt
 
-warp_tiltseries                                 Tilt-series processing dir
-├── warp_tiltseries.settings                    WarpTools settings file
-└── tomogram01.xml                              Tilt-series XML (<UseTilt> — exclusions saved here)
+warp_tiltseries                                  Tilt-series processing dir
+├── warp_tiltseries.settings                     WarpTools settings file
+└── tomogram01.xml                               Tilt-series XML (<UseTilt> — exclusions saved here)
 ```
 
-> The visualiser displays the per-tilt images from `average/` and saves exclusions to the tilt-series `.xml`. It does **not** read the `.st` stack in`tiltstack/` — that stack is produced later by `ts_stack`, which reads the`<UseTilt>` exclusions you set here.
+> The visualiser displays the per-tilt images from `average/` and saves
+> exclusions to the tilt-series `.xml`. It does **not** read the `.st` stack in
+> `tiltstack/` — that stack is produced later by `ts_stack`, which reads the
+> `<UseTilt>` exclusions you set here.
 
 Setting shell variables beforehand can help to speed up commands but not essential:
 
@@ -285,10 +288,16 @@ tilt-series XML for the current series:
 
 > **Note:** the visualiser does **not** modify the `.tomostar` file. Earlier versions removed excluded rows from the tomostar, but this shortened it relative to the full-length `<UseTilt>` list and broke `ts_stack`. Keeping the tomostar intact and recording exclusions only in `<UseTilt>` is the robust approach and round-trips correctly across sessions.
 
-A timestamped backup of the XML is created before writing:
+A timestamped backup of the original XML is saved before each write. Backups
+go into an `xml_original_backups/` subdirectory (created automatically when the
+tool starts) alongside the tilt-series XML, so they don't clutter the XML
+directory:
 
 ```
-tomogram01.xml.backup_20260618_154500
+warp_tiltseries/
+├── tomogram01.xml
+└── xml_original_backups/
+    └── tomogram01.xml.backup_20260618_154500
 ```
 
 **Previous exclusions are restored automatically** — the `<UseTilt>` field is read from the XML every time a series is loaded, so reopening a dataset shows your earlier exclusions on the overview bar.

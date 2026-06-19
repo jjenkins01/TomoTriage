@@ -4,6 +4,21 @@ All notable changes to the WarpTools Tilt Series Visualiser are documented here.
 
 ---
 
+## [1.5.0] - 2026-06-19
+
+### Added
+- **XML backups collected in `xml_original_backups/`** — the timestamped
+  backup of each tilt-series XML is now written into an `xml_original_backups/`
+  subdirectory alongside the XML, instead of next to the original file. The
+  directory is created automatically when the tool starts. This keeps the XML
+  directory tidy while preserving every pre-edit version.
+
+### Removed
+- Dead `write_tomostar()` helper (unused since v1.4.0 stopped modifying the
+  `.tomostar`).
+
+---
+
 ## [1.4.0] - 2026-06-18
 
 ### Changed
