@@ -71,7 +71,8 @@ import mrcfile
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QListWidget,
     QPushButton, QCheckBox, QComboBox, QHBoxLayout, QVBoxLayout,
-    QSizePolicy, QSplitter, QStatusBar
+    QSizePolicy, QSplitter, QStatusBar,
+    QDialog, QGridLayout, QColorDialog
 )
 from PyQt5.QtGui import (
     QImage, QPixmap, QColor, QPainter, QPen, QPainterPath,
@@ -96,8 +97,42 @@ C_GREEN   = '#4ade80'
 C_RED     = '#f87171'
 C_YELLOW  = '#fbbf24'
 C_ORANGE  = '#fb923c'
+C_PURPLE  = '#a855f7'
 C_TEXT    = '#e2e8f0'
 C_DIM     = '#64748b'
+
+
+class CategoryColors:
+    """
+    Mutable colour theme for the overview-bar tilt categories. Session-only —
+    edited live via the in-app colour picker, not persisted between launches.
+    Keys map to the five categories used by the overview bar and bulk-exclude.
+    """
+    LABELS = {
+        'excluded': 'Excluded',
+        'flagged':  'Auto-flagged (intensity outlier)',
+        'ctf_bad':  'CTF fit > 10 \u00c5',
+        'ctf_mod':  'CTF fit 8\u201310 \u00c5',
+        'good':     'CTF fit \u2264 8 \u00c5 (good)',
+    }
+    # display order for the picker dialog
+    ORDER = ['excluded', 'flagged', 'ctf_bad', 'ctf_mod', 'good']
+
+    def __init__(self):
+        self.colors = {
+            'excluded': C_RED,
+            'flagged':  C_ORANGE,
+            'ctf_bad':  C_PURPLE,
+            'ctf_mod':  C_YELLOW,
+            'good':     C_GREEN,
+        }
+
+    def __getitem__(self, key):
+        return self.colors[key]
+
+    def set(self, key, hexcolor):
+        if key in self.colors:
+            self.colors[key] = hexcolor
 
 # ---------------------------------------------------------------------------
 # Sound
@@ -431,7 +466,11 @@ class ImageLabel(QLabel):
     Supports:
       - Red exclusion overlay with text
       - Spatial motion track overlay drawn with QPainter
+      - Mouse-wheel scrolling to navigate tilts (emits wheel_scrolled)
     """
+
+    # +1 for scroll up (towards next), -1 for scroll down (towards previous)
+    wheel_scrolled = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -447,6 +486,16 @@ class ImageLabel(QLabel):
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet(
             f"background-color: {C_PANEL}; border: 1px solid #334155;")
+
+    def wheelEvent(self, event):
+        # Scroll over the tilt image to step through tilts. angleDelta is in
+        # eighths of a degree; sign gives direction. Scroll up -> next tilt.
+        dy = event.angleDelta().y()
+        if dy != 0:
+            self.wheel_scrolled.emit(1 if dy > 0 else -1)
+            event.accept()
+        else:
+            super().wheelEvent(event)
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -629,7 +678,7 @@ class ImageLabel(QLabel):
 class OverviewCanvas(FigureCanvasQTAgg):
     tilt_clicked = pyqtSignal(int)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, colors=None):
         fig = plt.Figure(figsize=(10, 0.7), facecolor=C_PANEL)
         fig.subplots_adjust(left=0.02, right=0.99, top=0.75, bottom=0.25)
         self.ax = fig.add_subplot(111)
@@ -639,45 +688,79 @@ class OverviewCanvas(FigureCanvasQTAgg):
         self.setParent(parent)
         self.setFixedHeight(80)
         self._n = 0
+        self._order = []      # display position -> real tilt index
+        self.colors = colors or CategoryColors()
         self.mpl_connect('button_press_event', self._bar_click)
 
     def _bar_click(self, event):
         if event.xdata is not None and event.button == 1 and self._n > 0:
-            self.tilt_clicked.emit(
-                max(0, min(int(round(event.xdata)), self._n - 1)))
+            pos = max(0, min(int(round(event.xdata)), self._n - 1))
+            # Map the clicked display position back to the real tilt index
+            real = self._order[pos] if pos < len(self._order) else pos
+            self.tilt_clicked.emit(real)
 
     def update_overview(self, excluded, flagged, current_idx,
-                        ctf_values=None):
+                        ctf_values=None, order=None, angles=None):
+        """
+        order : list mapping display position -> real tilt index. When given
+                (angle-sorted), the bar is drawn in that order so the centre
+                is 0 deg and the extremes sit at the edges. Defaults to natural
+                acquisition order.
+        angles: real per-tilt angles, used for sparse x-axis tick labels.
+        """
         self._n = len(excluded)
+        n = len(excluded)
+        if order is None:
+            order = list(range(n))
+        self._order = order
+
         self.ax.cla()
         self.ax.set_facecolor(C_PANEL)
         for sp in self.ax.spines.values(): sp.set_edgecolor('#334155')
-        n = len(excluded)
 
+        C = self.colors
         colours = []
-        for i in range(n):
-            if excluded[i]:
-                colours.append(C_RED)
-            elif flagged[i]:
-                colours.append(C_ORANGE)
-            elif ctf_values and i < len(ctf_values) and ctf_values[i]:
-                ctf = ctf_values[i]
-                if   ctf > 10: colours.append('#a855f7')   # purple
-                elif ctf > 8:  colours.append(C_YELLOW)    # amber
-                else:          colours.append(C_GREEN)
+        for real in order:
+            if excluded[real]:
+                colours.append(C['excluded'])
+            elif flagged[real]:
+                colours.append(C['flagged'])
+            elif ctf_values and real < len(ctf_values) and ctf_values[real]:
+                ctf = ctf_values[real]
+                if   ctf > 10: colours.append(C['ctf_bad'])
+                elif ctf > 8:  colours.append(C['ctf_mod'])
+                else:          colours.append(C['good'])
             else:
-                colours.append(C_GREEN)
+                colours.append(C['good'])
 
         self.ax.bar(range(n), [1]*n, color=colours, width=0.85, edgecolor='none')
-        self.ax.axvline(current_idx, color=C_YELLOW, lw=2, zorder=10)
+
+        # Highlight current tilt at its DISPLAY position
+        try:
+            disp_pos = order.index(current_idx)
+        except ValueError:
+            disp_pos = current_idx
+        self.ax.axvline(disp_pos, color=C_TEXT, lw=2, zorder=10)
+
         self.ax.set_xlim(-0.5, n-0.5); self.ax.set_ylim(0, 1.2)
         self.ax.set_yticks([])
+
+        # Sparse angle tick labels (every ~8th display position) if we have
+        # angles, so the user can read the -60..0..+60 layout
+        if angles is not None and n > 0:
+            step = max(1, n // 12)
+            ticks = list(range(0, n, step))
+            self.ax.set_xticks(ticks)
+            self.ax.set_xticklabels(
+                [f'{angles[order[t]]:+.0f}' for t in ticks])
         self.ax.tick_params(axis='x', colors=C_TEXT, labelsize=6)
+
         n_excl = sum(excluded)
         self.ax.set_title(
             f'{n_excl} excluded / {n}   '
             'red=excl  orange=flagged  purple=CTF>10\u00c5  '
-            'amber=8\u201310\u00c5  green=good',
+            'amber=8\u201310\u00c5  green=good   '
+            '(ordered by tilt angle)',
             color=C_TEXT, fontsize=7, pad=2)
         self.draw_idle()
 
@@ -698,6 +781,72 @@ def _btn(text, callback):
         QPushButton:pressed {{ background: #0a2040; }}
     """)
     return b
+
+
+class ColorPickerDialog(QDialog):
+    """
+    Small dialog to recolour the overview-bar categories. Changes apply live
+    via the on_change callback. Session-only — not persisted between launches.
+    """
+
+    def __init__(self, colors, on_change, parent=None):
+        super().__init__(parent)
+        self.colors = colors
+        self.on_change = on_change
+        self._swatches = {}
+        self.setWindowTitle("Category Colours")
+        self.setStyleSheet(f"background: {C_BG}; color: {C_TEXT};")
+
+        layout = QGridLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        title = QLabel("Click a colour to change it")
+        title.setStyleSheet(f"color: {C_TEXT}; font-weight: bold; "
+                            f"font-size: 12px;")
+        layout.addWidget(title, 0, 0, 1, 2)
+
+        for row, key in enumerate(CategoryColors.ORDER, start=1):
+            lbl = QLabel(CategoryColors.LABELS[key])
+            lbl.setStyleSheet(f"color: {C_TEXT}; font-size: 12px;")
+            layout.addWidget(lbl, row, 0)
+
+            sw = QPushButton()
+            sw.setFixedSize(60, 24)
+            sw.setCursor(Qt.PointingHandCursor)
+            self._style_swatch(sw, self.colors[key])
+            sw.clicked.connect(lambda _checked, k=key: self._pick(k))
+            self._swatches[key] = sw
+            layout.addWidget(sw, row, 1)
+
+        # Reset + Close
+        btn_reset = _btn("Reset to defaults", self._reset)
+        btn_close = _btn("Close", self.accept)
+        layout.addWidget(btn_reset, len(CategoryColors.ORDER) + 1, 0)
+        layout.addWidget(btn_close, len(CategoryColors.ORDER) + 1, 1)
+
+    def _style_swatch(self, btn, hexcolor):
+        btn.setStyleSheet(
+            f"background: {hexcolor}; border: 1px solid {C_TEXT}; "
+            f"border-radius: 4px;")
+
+    def _pick(self, key):
+        current = QColor(self.colors[key])
+        chosen = QColorDialog.getColor(current, self,
+                                       f"Choose colour: "
+                                       f"{CategoryColors.LABELS[key]}")
+        if chosen.isValid():
+            self.colors.set(key, chosen.name())
+            self._style_swatch(self._swatches[key], chosen.name())
+            self.on_change()
+
+    def _reset(self):
+        defaults = CategoryColors()
+        for key in CategoryColors.ORDER:
+            self.colors.set(key, defaults[key])
+            self._style_swatch(self._swatches[key], self.colors[key])
+        self.on_change()
+
 
 # ---------------------------------------------------------------------------
 # Main window
@@ -730,6 +879,7 @@ class MainWindow(QMainWindow):
         self.series_idx  = 0
         self.tilt_idx    = 0
         self._cache      = {}
+        self.colors      = CategoryColors()   # session-only category colours
 
         # Create the xml_original_backups/ directory up front for every XML
         # location in the series list, so it exists as soon as the tool runs.
@@ -789,12 +939,18 @@ class MainWindow(QMainWindow):
         n_mot = sum(1 for m in motion_paths if m is not None)
         print(f"  Average images: {n_img}/{n}   Motion files: {n_mot}/{n}")
 
+        # Display order for the overview bar: sort tilt indices by angle so the
+        # bar reads -60 ... 0 ... +60 (centre = 0 deg). Underlying data and
+        # <UseTilt> mapping stay in acquisition order; this is display-only.
+        angle_order = sorted(range(n), key=lambda i: angles[i])
+
         self._cache[idx] = dict(
             name=name, tomostar_path=tp, ts_xml=xp,
             col_names=col_names, rows=rows, n=n,
             excluded=excluded,
             flagged=auto_flag_candidates_from_paths(image_paths, self.sigma),
             angles=angles, movies=movies,
+            angle_order=angle_order,          # display pos -> real tilt index
             image_paths=image_paths,          # per-tilt average .mrc paths
             image_cache={},                   # idx -> loaded image (lazy)
             frame_meta=frame_meta,
@@ -845,6 +1001,8 @@ class MainWindow(QMainWindow):
         # Left: tilt image (motion overlay drawn directly onto it)
         self.img_tilt = ImageLabel()
         self.img_tilt.setMinimumWidth(400)
+        # Scroll wheel over the tilt image steps through tilts
+        self.img_tilt.wheel_scrolled.connect(self._on_wheel)
         splitter.addWidget(self.img_tilt)
 
         # Middle: power spectrum (aspect-correct, 2:1 for half-Fourier)
@@ -890,7 +1048,7 @@ class MainWindow(QMainWindow):
         root.addWidget(splitter, stretch=10)
 
         # ── Overview bar ──────────────────────────────────────────────
-        self.overview = OverviewCanvas()
+        self.overview = OverviewCanvas(colors=self.colors)
         self.overview.tilt_clicked.connect(self._on_overview_click)
         root.addWidget(self.overview, stretch=0)
 
@@ -991,26 +1149,24 @@ class MainWindow(QMainWindow):
             f"padding: 6px 4px;")
         bulk_row.addWidget(bulk_lbl)
 
-        # (label, category, button colour)
+        # (label, category) — colour comes from the live theme
         bulk_specs = [
-            ('Purple (CTF > 10 \u00c5)', 'ctf_bad', '#a855f7'),
-            ('Amber (CTF 8\u201310 \u00c5)', 'ctf_mod', C_YELLOW),
-            ('Orange (flagged)',          'flagged', C_ORANGE),
+            ('Purple (CTF > 10 \u00c5)', 'ctf_bad'),
+            ('Amber (CTF 8\u201310 \u00c5)', 'ctf_mod'),
+            ('Orange (flagged)',          'flagged'),
         ]
-        for label, category, colour in bulk_specs:
+        self._bulk_buttons = []   # (button, category) for live recolour
+        for label, category in bulk_specs:
             b = QPushButton(label)
             b.clicked.connect(
                 lambda _checked, c=category: self._exclude_category(c))
-            b.setStyleSheet(f"""
-                QPushButton {{
-                    background: {colour}; color: #1a1a2e;
-                    border: 1px solid #334155; border-radius: 4px;
-                    padding: 6px 10px; font-size: 12px; font-weight: bold;
-                }}
-                QPushButton:hover   {{ border: 2px solid {C_TEXT}; }}
-                QPushButton:pressed {{ background: {C_ACCENT}; color: {C_TEXT}; }}
-            """)
+            self._bulk_buttons.append((b, category))
             bulk_row.addWidget(b)
+        self._restyle_bulk_buttons()
+
+        # Colour-picker button
+        btn_colours = _btn("Colours\u2026", self._open_color_picker)
+        bulk_row.addWidget(btn_colours)
 
         bulk_row.addStretch(1)
         root.addLayout(bulk_row, stretch=0)
@@ -1064,14 +1220,17 @@ class MainWindow(QMainWindow):
         else:
             self.img_ps.set_array(None)
 
-        # Overview
+        # Overview — ordered by tilt angle (centre = 0 deg)
         ctf_vals = [m.get('ctf_res') for m in s['frame_meta']]
         self.overview.update_overview(s['excluded'], s['flagged'],
-                                      ti, ctf_vals)
+                                      ti, ctf_vals,
+                                      order=s['angle_order'],
+                                      angles=s['angles'])
 
         # Tilt title
         status = '  [EXCLUDED]' if excl else ('  [candidate]' if cand else '')
-        col = C_RED if excl else (C_ORANGE if cand else C_TEXT)
+        col = (self.colors['excluded'] if excl else
+               (self.colors['flagged'] if cand else C_TEXT))
         self.tilt_title.setText(
             f'Tilt {ti+1}/{s["n"]}   {angle:+.2f}\u00b0{status}')
         self.tilt_title.setStyleSheet(
@@ -1114,6 +1273,25 @@ class MainWindow(QMainWindow):
         if self.tilt_idx < self._s()['n'] - 1:
             self.tilt_idx += 1; self._refresh()
 
+    def _on_wheel(self, direction):
+        """
+        Scroll-wheel navigation over the tilt image. Steps through tilts in the
+        angle-sorted display order (matching the overview bar), so scrolling up
+        moves towards the right-hand (more positive) tilts and down towards the
+        left (more negative).
+        """
+        s = self._s()
+        order = s.get('angle_order') or list(range(s['n']))
+        try:
+            pos = order.index(self.tilt_idx)
+        except ValueError:
+            pos = 0
+        pos = max(0, min(pos + direction, len(order) - 1))
+        new_idx = order[pos]
+        if new_idx != self.tilt_idx:
+            self.tilt_idx = new_idx
+            self._refresh()
+
     def _on_toggle(self):
         s = self._s()
         was = s['excluded'][self.tilt_idx]
@@ -1155,6 +1333,32 @@ class MainWindow(QMainWindow):
         self._refresh()
         self.statusBar().showMessage(
             f"Excluded {count} {category.replace('_', ' ')} tilt(s)", 3000)
+        self.setFocus()
+
+    # ── Colour customisation ─────────────────────────────────────────────────
+
+    def _restyle_bulk_buttons(self):
+        """Recolour the bulk-exclude buttons from the live theme."""
+        for b, category in getattr(self, '_bulk_buttons', []):
+            colour = self.colors[category]
+            b.setStyleSheet(f"""
+                QPushButton {{
+                    background: {colour}; color: #1a1a2e;
+                    border: 1px solid #334155; border-radius: 4px;
+                    padding: 6px 10px; font-size: 12px; font-weight: bold;
+                }}
+                QPushButton:hover   {{ border: 2px solid {C_TEXT}; }}
+                QPushButton:pressed {{ background: {C_ACCENT}; color: {C_TEXT}; }}
+            """)
+
+    def _on_colors_changed(self):
+        """Called live from the colour picker — repaint everything."""
+        self._restyle_bulk_buttons()
+        self._refresh()
+
+    def _open_color_picker(self):
+        dlg = ColorPickerDialog(self.colors, self._on_colors_changed, self)
+        dlg.exec_()
         self.setFocus()
 
     # ── Save ───────────────────────────────────────────────────────────────

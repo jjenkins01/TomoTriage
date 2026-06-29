@@ -11,7 +11,7 @@ An interactive quality control tool for tilt series data processed with [WarpToo
 - **Side-by-side display** of the tilt image and power spectrum
 - **Images from `average/`** — every acquired tilt is shown (loaded from the per-tilt motion-corrected averages), so excluded tilts remain visible and can be re-included later
 - **Motion track overlay** drawn spatially on the tilt image — each patch placed at its correct grid position and colour-coded by motion magnitude (green = low, red = high). Toggle on/off with a checkbox or `Ctrl+M`
-- **CTF-colour-coded overview bar** — click any bar to jump directly to that tilt
+- **CTF-colour-coded overview bar** — ordered by tilt angle (0° centre, extremes at the edges); click any bar to jump directly to that tilt. Category colours are customisable.
 - **Exclusion** of bad tilts writes to `<UseTilt>` in the tilt-series XML (mapped by tilt angle); the `.tomostar` is never modified, and previous exclusions are restored automatically on next load
 - **Bulk exclude-by-colour** — exclude all tilts of a category (purple / amber / orange) in one click
 - **Scrollable tilt series list** — switch between datasets with a click
@@ -156,10 +156,7 @@ warp_tiltseries                                  Tilt-series processing dir
 └── tomogram01.xml                               Tilt-series XML (<UseTilt> — exclusions saved here)
 ```
 
-> The visualiser displays the per-tilt images from `average/` and saves
-> exclusions to the tilt-series `.xml`. It does **not** read the `.st` stack in
-> `tiltstack/` — that stack is produced later by `ts_stack`, which reads the
-> `<UseTilt>` exclusions you set here.
+> The visualiser displays the per-tilt images from `average/` and saves exclusions to the tilt-series `.xml`. It does **not** read the `.st` stack in`tiltstack/` — that stack is produced later by `ts_stack`, which reads the `<UseTilt>` exclusions you set here.
 
 Setting shell variables beforehand can help to speed up commands but not essential:
 
@@ -237,7 +234,9 @@ Displays the CTF power spectrum from `powerspectrum/` with square-root scaling. 
 
 ### Overview bar
 
-One coloured bar per tilt. **Click any bar to jump directly to that tilt.** Colour coding (priority order):
+One coloured bar per tilt, **ordered by tilt angle** — the most negative tilt on the left, 0° in the centre, and the most positive on the right. For a dose-symmetric series (e.g. −60° → +60°) this means the bar mirrors the physical tilt geometry rather than the acquisition order. Sparse angle labels are shown along the axis. **Click any bar to jump directly to that tilt.**
+
+Colour coding (priority order):
 
 | Colour | Meaning |
 |---|---|
@@ -246,6 +245,8 @@ One coloured bar per tilt. **Click any bar to jump directly to that tilt.** Colo
 | Purple | CTF fit > 10 Å |
 | Amber | CTF fit 8–10 Å |
 | Green | CTF fit ≤ 8 Å |
+
+These colours are **customisable** — click the **Colours…** button to recolour any category with a colour picker. Changes apply live to both the overview bar and the bulk-exclude buttons. Colour choices are session-only and reset to the defaults above on the next launch.
 
 ### Bulk exclude-by-colour
 
@@ -276,6 +277,14 @@ Lists all tilt series found in the processing directory. Click a name to switch 
 | `Ctrl+R` | Reset — mark all tilts as included |
 
 > **Why Ctrl+E and not just E?** The tilt series list widget consumes single-letter keypresses for its built-in search, so bare `E` never reaches the window's key handler. `Ctrl+<letter>` combinations bypass this.
+
+### Mouse navigation
+
+| Action | Effect |
+|---|---|
+| **Scroll wheel over the tilt image** | Step through tilts (follows the angle-sorted order — scroll up for more positive tilts, down for more negative) |
+| **Click a bar in the overview** | Jump directly to that tilt |
+| **Click a name in the tilt series list** | Switch to that series |
 
 ---
 

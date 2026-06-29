@@ -4,6 +4,25 @@ All notable changes to the WarpTools Tilt Series Visualiser are documented here.
 
 ---
 
+## [1.6.0] - 2026-06-19
+
+### Added
+- **Overview bar ordered by tilt angle** — the bottom bar now displays tilts
+  sorted by angle (most-negative on the left, 0° in the centre, most-positive
+  on the right), reflecting the geometry of a dose-symmetric tilt series rather
+  than acquisition order. Clicking a bar still selects the correct tilt, and
+  sparse angle labels are shown along the axis. Underlying data and `<UseTilt>`
+  mapping are unchanged — this is display-only.
+- **Mouse-wheel tilt navigation** — scroll over the tilt image to step through
+  tilts. Scrolling follows the angle-sorted order (up = towards more positive
+  tilts, down = towards more negative), matching the overview bar.
+- **Customisable category colours** — a "Colours…" button opens a picker to
+  recolour the five overview categories (excluded, flagged, CTF > 10 Å,
+  CTF 8–10 Å, good). Changes apply live to the overview bar and bulk-exclude
+  buttons. Session-only (resets on next launch).
+
+---
+
 ## [1.5.0] - 2026-06-19
 
 ### Added
