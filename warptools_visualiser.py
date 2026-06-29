@@ -417,18 +417,19 @@ def read_frame_xml(xml_path):
 
 def compute_ctf_fit_curves(meta):
     """
-    Reconstruct the Warp-GUI CTF fit display from parsed XML data.
+    Reconstruct the Warp CTF fit display, following Warp's own fitting
+    convention (Tegunov & Cramer 2019, and the Warp source pseudocode):
 
-    WarpTools stores the experimental 1D power spectrum (<PS1D>) with its
-    natural amplitude decay — a huge low-frequency peak and tiny high-frequency
-    oscillations. To show the Thon rings at full amplitude across all
-    frequencies (as the Warp GUI does), the experimental curve is divided by
-    the simulated scale envelope (<SimulatedScale>), which flattens the decay.
-    The fitted curve is the analytical CTF^2 from the <CTF> parameters.
+      Background = spline through the CTF zeros of the experimental spectrum
+      Envelope   = spline through the CTF peaks of (experimental - background)
+      experimental displayed = PS1D - Background        (envelopes naturally)
+      fitted displayed       = CTF^2 * Envelope         (shares the envelope)
 
-    Both are returned normalised to ~[0, 1] (Intensity), on the fitted
-    frequency range. Returns (s_inv_angstrom, experimental, fitted) or
-    (None, None, None) if data is unavailable.
+    Both curves therefore decay together with matching amplitude, exactly as
+    shown in the Warp GUI. The full frequency range from the XML is returned
+    (no cropping); callers scale the y-axis robustly so the low-frequency
+    rolloff spike does not dominate. Returns (s_inv_angstrom, experimental,
+    fitted) or (None, None, None).
     """
     freq = meta.get('ps1d_freq'); ps = meta.get('ps1d_val')
     if freq is None or ps is None:
@@ -447,47 +448,29 @@ def compute_ctf_fit_curves(meta):
     # Electron wavelength (Å), relativistic
     lam = 12.2639 / np.sqrt(volt + 0.97845e-6 * volt * volt)
 
-    # Spatial frequency in 1/Å (freq is cycles/pixel)
+    # Spatial frequency in 1/Å (PS1D freq is cycles/pixel)
     s = freq / max(pixel, 1e-6)
 
     # Analytical CTF^2
     gamma = (np.pi * lam * s**2 * defocus
              - 0.5 * np.pi * lam**3 * s**4 * cs)
-    amp_term = np.arcsin(np.clip(amp, 0, 1))
-    ctf2 = np.sin(gamma + phase + amp_term)**2
+    ctf2 = np.sin(gamma + phase + np.arcsin(np.clip(amp, 0, 1)))**2
 
-    # Subtract background if present (often zero in WarpTools output)
+    # Experimental = PS1D - background (NOT divided by the envelope, so the
+    # natural amplitude decay is preserved and the curve envelopes)
     exp = ps.copy()
     bgf, bgv = meta.get('bg_freq'), meta.get('bg_val')
     if bgf is not None and bgv is not None and not np.allclose(bgv, 0):
         exp = exp - np.interp(freq, bgf, bgv)
 
-    # Flatten the amplitude decay by dividing by the scale envelope, so the
-    # high-frequency Thon rings appear at full amplitude (Warp-GUI style).
+    # Fitted = CTF^2 * envelope (the same envelope Warp fits to the
+    # experimental peaks), so both curves share the same decay
+    fitted = ctf2
     scf, scv = meta.get('scale_freq'), meta.get('scale_val')
-    fit_lo = None
     if scf is not None and scv is not None:
-        scale_on = np.interp(freq, scf, scv)
-        scale_on = np.where(scale_on <= 0, np.nan, scale_on)
-        exp = exp / scale_on
-        fit_lo = float(scf.min())   # fit region starts where the scale begins
+        fitted = ctf2 * np.interp(freq, scf, scv)
 
-    # Restrict to the fitted region (drop the low-frequency rolloff spike that
-    # otherwise dominates the display)
-    if fit_lo is not None:
-        mask = freq >= fit_lo
-    else:
-        mask = np.ones_like(freq, dtype=bool)
-    s_m, exp_m, ctf2_m = s[mask], exp[mask], ctf2[mask]
-
-    # Normalise experimental robustly to ~[0,1] (percentiles avoid any spike)
-    finite = exp_m[np.isfinite(exp_m)]
-    if finite.size:
-        lo, hi = np.percentile(finite, 2), np.percentile(finite, 98)
-        if hi > lo:
-            exp_m = np.clip((exp_m - lo) / (hi - lo), 0, 1)
-    # CTF^2 is already in [0,1]
-    return s_m, exp_m, ctf2_m
+    return s, exp, fitted
 
 
 def load_motion_json(json_path):
@@ -918,9 +901,11 @@ class PlotsCanvas(FigureCanvasQTAgg):
 
     def __init__(self, parent=None):
         fig = plt.Figure(figsize=(5, 8), facecolor=C_PANEL)
-        # Wider plot area (less wasted margin) so the axes are centred and
-        # use the full panel width.
-        fig.subplots_adjust(left=0.13, right=0.98, top=0.96, bottom=0.07,
+        # Symmetric left/right margins so the plot data area is centred within
+        # the panel (lining up with the centred power-spectrum image above).
+        # A fixed y-label x-coordinate (set in update) keeps the four labels
+        # aligned without needing asymmetric margins.
+        fig.subplots_adjust(left=0.15, right=0.985, top=0.96, bottom=0.07,
                             hspace=0.55)
         self.ax_ctf = fig.add_subplot(411)
         self.ax_res = fig.add_subplot(412)
@@ -955,11 +940,29 @@ class PlotsCanvas(FigureCanvasQTAgg):
         ax.cla(); self._style_axes(ax)
         s, exp_curve, fitted = compute_ctf_fit_curves(current_meta or {})
         if s is not None:
-            # curves arrive pre-normalised to ~[0,1] (Intensity)
-            ax.plot(s, exp_curve, color=C_TEXT, lw=0.9, label='experimental')
-            ax.plot(s, fitted, color=current_color, lw=1.1, label='fitted CTF')
+            # Both curves share the same envelope by construction (experimental
+            # = PS1D - background; fitted = CTF^2 * envelope). Put them on a
+            # common scale so they overlay with matching amplitude, using a
+            # robust high-percentile reference so the low-frequency rolloff
+            # spike doesn't flatten the rest. The full frequency range is kept.
+            exp_f = np.asarray(exp_curve, dtype=float)
+            fit_f = np.asarray(fitted, dtype=float)
+            finite = exp_f[np.isfinite(exp_f)]
+            ref = np.percentile(finite, 99) if finite.size else 1.0
+            if ref <= 0:
+                ref = np.nanmax(finite) if finite.size else 1.0
+            exp_disp = exp_f / ref
+            # fitted shares the envelope; scale by its own 99th pct so its
+            # peak amplitude matches the experimental's
+            fit_finite = fit_f[np.isfinite(fit_f)]
+            fref = np.percentile(fit_finite, 99) if fit_finite.size else 1.0
+            fit_disp = fit_f / fref if fref > 0 else fit_f
+
+            ax.plot(s, exp_disp, color=C_TEXT, lw=0.9, label='experimental')
+            ax.plot(s, fit_disp, color=current_color, lw=1.1, label='fitted CTF')
             ax.set_xlim(s.min(), s.max())
-            ax.set_ylim(-0.05, 1.08)
+            # headroom; clip the spike at the top rather than rescaling
+            ax.set_ylim(-0.05, 1.15)
             ax.legend(fontsize=8, loc='upper right', framealpha=0.85,
                       facecolor=C_PANEL, edgecolor='#334155',
                       labelcolor=C_TEXT)
@@ -994,6 +997,12 @@ class PlotsCanvas(FigureCanvasQTAgg):
             ax.set_xlabel('tilt angle (\u00b0)', fontsize=LBL)
             ax.margins(x=0.03)
 
+        # Pin all four y-axis labels to the same x-coordinate (in axes
+        # fraction, negative = left of the axes) so they line up vertically
+        # regardless of tick-label width.
+        YLBL_X = -0.13
+        for ax in (self.ax_ctf, self.ax_res, self.ax_def, self.ax_mot):
+            ax.yaxis.set_label_coords(YLBL_X, 0.5)
         self.draw_idle()
 
 
