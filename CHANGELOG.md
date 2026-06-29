@@ -4,6 +4,31 @@ All notable changes to the WarpTools Tilt Series Visualiser are documented here.
 
 ---
 
+## [1.7.0] - 2026-06-29
+
+### Added
+- **Restructured right-hand panel with diagnostic plots.** The power spectrum
+  moves to the top of the right-hand side (cropped to the 128-row signal band),
+  and four equal-height plots are shown beneath it:
+  1. **CTF fit** — background-subtracted experimental 1D power spectrum vs the
+     fitted CTF² envelope for the current tilt, reconstructed from the per-tilt
+     XML (`PS1D`, `SimulatedBackground`, `SimulatedScale`, and `<CTF>`
+     parameters). The fitted line is coloured by the tilt's category (green /
+     amber / purple, or red if excluded) and updates as you navigate.
+  2. **CTF resolution (Å)** vs tilt angle
+  3. **Defocus (µm)** vs tilt angle
+  4. **Mean motion (Å)** vs tilt angle
+
+  Plots 2–4 are scatter plots (no connecting lines) with each point coloured to
+  match its tilt category; the current tilt is drawn enlarged. All read from the
+  per-frame XMLs in `--frame_dir`.
+
+### Removed
+- **"Scale" motion-track dropdown** removed from the controls (was not useful).
+  Motion tracks still draw at 1× and the overlay/local-only toggles remain.
+
+---
+
 ## [1.6.0] - 2026-06-19
 
 ### Added

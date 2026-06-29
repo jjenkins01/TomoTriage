@@ -8,7 +8,7 @@ An interactive quality control tool for tilt series data processed with [WarpToo
 
 ## Features
 
-- **Side-by-side display** of the tilt image and power spectrum
+- **Tilt image with motion overlay** on the left; **power spectrum and diagnostic plots** on the right (CTF fit, CTF resolution, defocus, and motion vs tilt angle)
 - **Images from `average/`** — every acquired tilt is shown (loaded from the per-tilt motion-corrected averages), so excluded tilts remain visible and can be re-included later
 - **Motion track overlay** drawn spatially on the tilt image — each patch placed at its correct grid position and colour-coded by motion magnitude (green = low, red = high). Toggle on/off with a checkbox or `Ctrl+M`
 - **CTF-colour-coded overview bar** — ordered by tilt angle (0° centre, extremes at the edges); click any bar to jump directly to that tilt. Category colours are customisable.
@@ -156,7 +156,7 @@ warp_tiltseries                                  Tilt-series processing dir
 └── tomogram01.xml                               Tilt-series XML (<UseTilt> — exclusions saved here)
 ```
 
-> The visualiser displays the per-tilt images from `average/` and saves exclusions to the tilt-series `.xml`. It does **not** read the `.st` stack in`tiltstack/` — that stack is produced later by `ts_stack`, which reads the `<UseTilt>` exclusions you set here.
+> The visualiser displays the per-tilt images from `average/` and saves exclusions to the tilt-series `.xml`. It does **not** read the `.st` stack in`tiltstack/` — that stack is produced later by `ts_stack`, which reads the`<UseTilt>` exclusions you set here.
 
 Setting shell variables beforehand can help to speed up commands but not essential:
 
@@ -223,14 +223,30 @@ Displays the motion-corrected average for the current tilt. When a tilt is exclu
 
 Toggle with the **Motion Overlay** checkbox or `Ctrl+M`.
 
-Two additional controls refine the motion display:
+One additional control refines the motion display:
 
 - **Local only** — subtracts the global mean trajectory (averaged across all patches) from each patch, leaving only the local, non-global component of the motion. This matches the "only local motion" option in the Warp GUI and is useful for spotting localised beam-induced movement.
-- **Scale** — magnifies the drawn tracks (1×–100×) so small displacements are easier to see, without changing the underlying data.
 
-### Power spectrum panel
+### Right-hand panel: power spectrum and diagnostic plots
 
-Displays the CTF power spectrum from `powerspectrum/` with square-root scaling. The 2:1 aspect ratio is preserved.
+The right-hand side stacks the power spectrum on top of four equal-height
+diagnostic plots, all updating as you navigate between tilts.
+
+**Power spectrum** (top) — the CTF power spectrum from `powerspectrum/`, shown
+with square-root scaling and cropped to the 128-row signal band so the rings
+are clearly visible.
+
+**1. CTF fit** — the background-subtracted experimental 1D power spectrum
+overlaid with the fitted CTF² envelope for the current tilt, reconstructed from
+the per-tilt XML. The fitted line is coloured to match the tilt's category
+(green / amber / purple, or red if the tilt is excluded), so you can see fit
+quality at a glance.
+
+**2–4. CTF resolution (Å), Defocus (µm), and Mean motion (Å) vs tilt angle** —
+scatter plots across the whole series, with each point coloured by its tilt
+category. The current tilt is drawn enlarged so you can locate it. These let you
+spot trends across the tilt range (e.g. resolution degrading at high tilt, or
+motion outliers).
 
 ### Overview bar
 

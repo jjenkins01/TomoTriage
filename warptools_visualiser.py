@@ -333,8 +333,43 @@ def read_usetilt_from_xml(xml_path, n, tilt_angles=None):
     return excluded
 
 
+def _parse_freq_value_list(text):
+    """
+    Parse WarpTools' 'freq|value;freq|value;...' encoding into two numpy
+    arrays (frequencies, values). Returns (None, None) on empty/missing.
+    """
+    if not text:
+        return None, None
+    freqs, vals = [], []
+    for pair in text.strip().split(';'):
+        if '|' not in pair:
+            continue
+        f, v = pair.split('|', 1)
+        try:
+            freqs.append(float(f)); vals.append(float(v))
+        except ValueError:
+            continue
+    if not freqs:
+        return None, None
+    return np.array(freqs), np.array(vals)
+
+
 def read_frame_xml(xml_path):
-    meta = {'ctf_res': None, 'defocus': None, 'motion': None}
+    """
+    Read per-tilt metadata and CTF curve data from a WarpTools frame XML.
+
+    Returns a dict with:
+      ctf_res, defocus, motion          -- scalar summaries (as before)
+      ps1d_freq, ps1d_val               -- experimental 1D power spectrum
+      bg_freq, bg_val                   -- simulated background
+      scale_freq, scale_val             -- simulated scale envelope
+      ctf_params                        -- dict of CTF fit parameters
+    """
+    meta = {'ctf_res': None, 'defocus': None, 'motion': None,
+            'ps1d_freq': None, 'ps1d_val': None,
+            'bg_freq': None, 'bg_val': None,
+            'scale_freq': None, 'scale_val': None,
+            'ctf_params': None}
     if not xml_path or not os.path.exists(xml_path): return meta
     try:
         tree = ET.parse(xml_path)
@@ -351,8 +386,87 @@ def read_frame_xml(xml_path):
         if nodes:
             vals = [float(nd.attrib['Value']) for nd in nodes if 'Value' in nd.attrib]
             if vals: meta['defocus'] = float(np.mean(vals))
+
+        # 1D CTF curve data
+        ps = root.find('.//PS1D')
+        if ps is not None:
+            meta['ps1d_freq'], meta['ps1d_val'] = _parse_freq_value_list(ps.text)
+        bg = root.find('.//SimulatedBackground')
+        if bg is not None:
+            meta['bg_freq'], meta['bg_val'] = _parse_freq_value_list(bg.text)
+        sc = root.find('.//SimulatedScale')
+        if sc is not None:
+            meta['scale_freq'], meta['scale_val'] = _parse_freq_value_list(sc.text)
+
+        # CTF fit parameters (from the <CTF> block)
+        ctf_node = root.find('.//CTF')
+        if ctf_node is not None:
+            params = {}
+            for p in ctf_node.findall('Param'):
+                name = p.attrib.get('Name'); val = p.attrib.get('Value')
+                if name is None or val is None:
+                    continue
+                try:
+                    params[name] = float(val)
+                except ValueError:
+                    params[name] = val
+            meta['ctf_params'] = params
     except Exception: pass
     return meta
+
+
+def compute_ctf_fit_curves(meta):
+    """
+    Reconstruct the Warp-style CTF fit display from parsed XML data:
+      - experimental: PS1D with the simulated background subtracted
+      - fitted:       CTF^2 modulated by the simulated scale envelope
+
+    Returns (freq, experimental, fitted) numpy arrays on the PS1D frequency
+    grid, or (None, None, None) if the required data is unavailable.
+    Frequencies are in cycles/pixel; callers convert to 1/Å using pixel size.
+    """
+    freq = meta.get('ps1d_freq'); ps = meta.get('ps1d_val')
+    if freq is None or ps is None:
+        return None, None, None
+    params = meta.get('ctf_params') or {}
+    try:
+        defocus = float(params.get('Defocus', 0.0)) * 1e4      # µm -> Å
+        cs      = float(params.get('Cs', 2.7)) * 1e7           # mm -> Å
+        volt    = float(params.get('Voltage', 300.0)) * 1e3    # kV -> V
+        amp     = float(params.get('Amplitude', 0.1))
+        phase   = float(params.get('PhaseShift', 0.0))
+        pixel   = float(params.get('PixelSize', 1.0))          # Å/px
+    except (TypeError, ValueError):
+        return None, None, None
+
+    # Electron wavelength (Å) from accelerating voltage (relativistic)
+    lam = 12.2639 / np.sqrt(volt + 0.97845e-6 * volt * volt)
+
+    # Spatial frequency in 1/Å (freq is cycles/pixel -> divide by pixel size)
+    s = freq / max(pixel, 1e-6)
+
+    # CTF: gamma = pi*lambda*s^2*(defocus - 0.5*lambda^2*s^2*Cs)
+    gamma = (np.pi * lam * s**2 * defocus
+             - 0.5 * np.pi * lam**3 * s**4 * cs)
+    amp_term = np.arcsin(np.clip(amp, 0, 1))
+    ctf = np.sin(gamma + phase + amp_term)
+    ctf2 = ctf**2
+
+    # Background-subtracted experimental curve (interpolate bg onto PS1D grid)
+    exp_curve = ps.copy()
+    bgf, bgv = meta.get('bg_freq'), meta.get('bg_val')
+    if bgf is not None and bgv is not None:
+        bg_interp = np.interp(freq, bgf, bgv)
+        exp_curve = ps - bg_interp
+
+    # Fitted curve: CTF^2 scaled by the simulated scale envelope
+    fitted = ctf2
+    scf, scv = meta.get('scale_freq'), meta.get('scale_val')
+    if scf is not None and scv is not None:
+        scale_interp = np.interp(freq, scf, scv)
+        fitted = ctf2 * scale_interp
+
+    return s, exp_curve, fitted
 
 
 def load_motion_json(json_path):
@@ -764,6 +878,106 @@ class OverviewCanvas(FigureCanvasQTAgg):
             color=C_TEXT, fontsize=7, pad=2)
         self.draw_idle()
 
+
+# ---------------------------------------------------------------------------
+# Right-hand plots: CTF fit + CTF resolution / defocus / motion vs tilt angle
+# ---------------------------------------------------------------------------
+
+class PlotsCanvas(FigureCanvasQTAgg):
+    """
+    Four stacked, equal-height plots shown on the right beneath the power
+    spectrum:
+      1) CTF fit       — background-subtracted experimental vs fitted CTF^2,
+                         coloured by the current tilt's category
+      2) CTF resolution (A) vs tilt angle   (scatter, per-tilt colours)
+      3) Defocus (um)        vs tilt angle
+      4) Mean motion (A)     vs tilt angle
+    The current tilt is drawn enlarged in plots 2-4.
+    """
+
+    def __init__(self, parent=None):
+        fig = plt.Figure(figsize=(5, 8), facecolor=C_PANEL)
+        fig.subplots_adjust(left=0.16, right=0.97, top=0.97, bottom=0.06,
+                            hspace=0.45)
+        self.ax_ctf = fig.add_subplot(411)
+        self.ax_res = fig.add_subplot(412)
+        self.ax_def = fig.add_subplot(413)
+        self.ax_mot = fig.add_subplot(414)
+        super().__init__(fig)
+        self.setParent(parent)
+        for ax in (self.ax_ctf, self.ax_res, self.ax_def, self.ax_mot):
+            self._style_axes(ax)
+
+    def _style_axes(self, ax):
+        ax.set_facecolor(C_PANEL)
+        for sp in ax.spines.values():
+            sp.set_edgecolor('#334155')
+        ax.tick_params(colors=C_TEXT, labelsize=6)
+        ax.xaxis.label.set_color(C_TEXT)
+        ax.yaxis.label.set_color(C_TEXT)
+
+    def update_plots(self, angles, ctf_res, defocus, motion, colours,
+                     current_idx, current_meta, current_color):
+        """
+        angles       : list of per-tilt angles (real/acquisition order)
+        ctf_res/...  : per-tilt scalar lists (may contain None)
+        colours      : per-tilt hex colour list (category colours)
+        current_idx  : index of the active tilt
+        current_meta : parsed frame meta dict for the active tilt (CTF curves)
+        current_color: hex colour for the active tilt (fit line colour)
+        """
+        # ---- 1) CTF fit for the current tilt ----
+        ax = self.ax_ctf
+        ax.cla(); self._style_axes(ax)
+        s, exp_curve, fitted = compute_ctf_fit_curves(current_meta or {})
+        if s is not None:
+            # Normalise both curves to [0,1] over the fitted range for display
+            def _norm(a):
+                a = np.asarray(a, dtype=float)
+                lo, hi = np.nanmin(a), np.nanmax(a)
+                return (a - lo) / (hi - lo) if hi > lo else a * 0
+            ax.plot(s, _norm(exp_curve), color=C_TEXT, lw=0.8,
+                    label='experimental')
+            ax.plot(s, _norm(fitted), color=current_color, lw=1.0,
+                    label='fitted')
+            ax.set_xlim(s.min(), s.max())
+            ax.set_ylim(-0.05, 1.05)
+            ax.legend(fontsize=5, loc='upper right', framealpha=0.2,
+                      labelcolor=C_TEXT)
+        else:
+            ax.text(0.5, 0.5, 'no CTF curve', color=C_DIM, fontsize=7,
+                    ha='center', va='center', transform=ax.transAxes)
+        ax.set_ylabel('CTF fit', fontsize=6)
+        ax.set_xlabel('spatial freq (1/\u00c5)', fontsize=6)
+        ax.set_yticks([])
+
+        # ---- 2-4) scatter plots vs tilt angle ----
+        specs = [
+            (self.ax_res, ctf_res, 'CTF res (\u00c5)'),
+            (self.ax_def, defocus, 'Defocus (\u00b5m)'),
+            (self.ax_mot, motion,  'Mean motion (\u00c5)'),
+        ]
+        for ax, values, ylabel in specs:
+            ax.cla(); self._style_axes(ax)
+            xs, ys, cs = [], [], []
+            for i, v in enumerate(values):
+                if v is None:
+                    continue
+                xs.append(angles[i]); ys.append(v); cs.append(colours[i])
+            if xs:
+                ax.scatter(xs, ys, c=cs, s=14, edgecolors='none', zorder=3)
+                # enlarge the current tilt's point
+                if current_idx < len(values) and values[current_idx] is not None:
+                    ax.scatter([angles[current_idx]], [values[current_idx]],
+                               c=[current_color], s=70, edgecolors=C_TEXT,
+                               linewidths=0.8, zorder=5)
+            ax.set_ylabel(ylabel, fontsize=6)
+            ax.set_xlabel('tilt angle (\u00b0)', fontsize=6)
+            ax.margins(x=0.03)
+
+        self.draw_idle()
+
+
 # ---------------------------------------------------------------------------
 # Button helper
 # ---------------------------------------------------------------------------
@@ -1005,10 +1219,26 @@ class MainWindow(QMainWindow):
         self.img_tilt.wheel_scrolled.connect(self._on_wheel)
         splitter.addWidget(self.img_tilt)
 
-        # Middle: power spectrum (aspect-correct, 2:1 for half-Fourier)
+        # Middle: power spectrum on top (cropped to signal), then the
+        # CTF-fit / resolution / defocus / motion plots filling the rest.
+        middle = QWidget()
+        middle.setStyleSheet(f"background: {C_BG};")
+        middle_layout = QVBoxLayout(middle)
+        middle_layout.setContentsMargins(0, 0, 0, 0)
+        middle_layout.setSpacing(4)
+
         self.img_ps = ImageLabel()
         self.img_ps.setMinimumWidth(300)
-        splitter.addWidget(self.img_ps)
+        # Power spectrum cropped to 512x128 -> keep its panel short so it shows
+        # just the signal band rather than reserving the full square.
+        self.img_ps.setMaximumHeight(150)
+        middle_layout.addWidget(self.img_ps, stretch=0)
+
+        self.plots = PlotsCanvas()
+        middle_layout.addWidget(self.plots, stretch=1)
+
+        middle.setMinimumWidth(320)
+        splitter.addWidget(middle)
 
         # Right: series list
         right = QWidget()
@@ -1112,29 +1342,6 @@ class MainWindow(QMainWindow):
             lambda s: self.img_tilt.set_local_motion(s == Qt.Checked))
         btn_row.addWidget(self._local_check)
 
-        # Motion scale dropdown
-        scale_lbl = QLabel("Scale:")
-        scale_lbl.setStyleSheet(
-            f"color: {C_TEXT}; font-size: 12px; padding: 6px 2px 6px 8px;")
-        btn_row.addWidget(scale_lbl)
-        self._scale_combo = QComboBox()
-        for s in ['1x', '2x', '5x', '10x', '20x', '50x', '100x']:
-            self._scale_combo.addItem(s)
-        self._scale_combo.setStyleSheet(f"""
-            QComboBox {{
-                background: {C_ACCENT}; color: {C_TEXT};
-                border: 1px solid #334155; border-radius: 4px;
-                padding: 4px 8px; font-size: 12px;
-            }}
-            QComboBox QAbstractItemView {{
-                background: {C_PANEL}; color: {C_TEXT};
-                selection-background-color: {C_HOVER};
-            }}
-        """)
-        self._scale_combo.currentTextChanged.connect(
-            lambda t: self.img_tilt.set_motion_scale(float(t.rstrip('x'))))
-        btn_row.addWidget(self._scale_combo)
-
         root.addLayout(btn_row, stretch=0)
 
         # ── Bulk exclude-by-colour row ────────────────────────────────
@@ -1208,7 +1415,9 @@ class MainWindow(QMainWindow):
                                  excluded=excl, candidate=cand,
                                  motion_data=mdata)
 
-        # Power spectrum (aspect-correct)
+        # Power spectrum — crop to the signal band. The .mrc is 512x256
+        # (half-Fourier); keep the central 128-row band so just the signal is
+        # shown, as in the Warp GUI.
         ps_img = None
         if self.frame_dir and ti < len(s['movies']):
             ps_path = os.path.join(self.frame_dir, 'powerspectrum',
@@ -1216,6 +1425,10 @@ class MainWindow(QMainWindow):
             ps_img = load_mrc_image(ps_path)
         if ps_img is not None:
             ps_d = np.sqrt(np.abs(ps_img))
+            h = ps_d.shape[0]
+            if h >= 256:
+                # keep the lower 128 rows (the signal half nearest the origin)
+                ps_d = ps_d[h - 128:h, :]
             self.img_ps.set_array(ps_d, 2, 98)
         else:
             self.img_ps.set_array(None)
@@ -1226,6 +1439,16 @@ class MainWindow(QMainWindow):
                                       ti, ctf_vals,
                                       order=s['angle_order'],
                                       angles=s['angles'])
+
+        # Right-hand plots: CTF fit (current tilt) + res/defocus/motion scatter
+        per_tilt_colours = [self.colors[self._categorise(i)]
+                            for i in range(s['n'])]
+        res_vals = [m.get('ctf_res') for m in s['frame_meta']]
+        def_vals = [m.get('defocus') for m in s['frame_meta']]
+        mot_vals = [m.get('motion')  for m in s['frame_meta']]
+        self.plots.update_plots(
+            s['angles'], res_vals, def_vals, mot_vals, per_tilt_colours,
+            ti, meta, per_tilt_colours[ti])
 
         # Tilt title
         status = '  [EXCLUDED]' if excl else ('  [candidate]' if cand else '')
