@@ -4,17 +4,21 @@ All notable changes to the WarpTools Tilt Series Visualiser are documented here.
 
 ---
 
-## [1.7.0] - 2026-06-29
+## [1.8.0] - 2026-06-29
 
 ### Added
 - **Restructured right-hand panel with diagnostic plots.** The power spectrum
   moves to the top of the right-hand side (cropped to the 128-row signal band),
   and four equal-height plots are shown beneath it:
-  1. **CTF fit** — background-subtracted experimental 1D power spectrum vs the
-     fitted CTF² envelope for the current tilt, reconstructed from the per-tilt
-     XML (`PS1D`, `SimulatedBackground`, `SimulatedScale`, and `<CTF>`
-     parameters). The fitted line is coloured by the tilt's category (green /
-     amber / purple, or red if excluded) and updates as you navigate.
+  1. **CTF fit** — the experimental 1D power spectrum and the fitted CTF² for
+     the current tilt, plotted as **Intensity (0–1)** vs spatial frequency. The
+     experimental curve is the stored `<PS1D>` flattened by the
+     `<SimulatedScale>` envelope (and background-subtracted if present), so the
+     Thon-ring oscillations show at full amplitude across all frequencies —
+     matching the live Warp GUI. The fitted CTF² is computed analytically from
+     the `<CTF>` parameters (defocus, Cs, voltage, amplitude contrast, phase
+     shift, pixel size). The fitted line is coloured by the tilt's category
+     (green / amber / purple, or red if excluded) and updates as you navigate.
   2. **CTF resolution (Å)** vs tilt angle
   3. **Defocus (µm)** vs tilt angle
   4. **Mean motion (Å)** vs tilt angle

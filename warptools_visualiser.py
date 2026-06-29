@@ -417,13 +417,18 @@ def read_frame_xml(xml_path):
 
 def compute_ctf_fit_curves(meta):
     """
-    Reconstruct the Warp-style CTF fit display from parsed XML data:
-      - experimental: PS1D with the simulated background subtracted
-      - fitted:       CTF^2 modulated by the simulated scale envelope
+    Reconstruct the Warp-GUI CTF fit display from parsed XML data.
 
-    Returns (freq, experimental, fitted) numpy arrays on the PS1D frequency
-    grid, or (None, None, None) if the required data is unavailable.
-    Frequencies are in cycles/pixel; callers convert to 1/Å using pixel size.
+    WarpTools stores the experimental 1D power spectrum (<PS1D>) with its
+    natural amplitude decay — a huge low-frequency peak and tiny high-frequency
+    oscillations. To show the Thon rings at full amplitude across all
+    frequencies (as the Warp GUI does), the experimental curve is divided by
+    the simulated scale envelope (<SimulatedScale>), which flattens the decay.
+    The fitted curve is the analytical CTF^2 from the <CTF> parameters.
+
+    Both are returned normalised to ~[0, 1] (Intensity), on the fitted
+    frequency range. Returns (s_inv_angstrom, experimental, fitted) or
+    (None, None, None) if data is unavailable.
     """
     freq = meta.get('ps1d_freq'); ps = meta.get('ps1d_val')
     if freq is None or ps is None:
@@ -439,34 +444,50 @@ def compute_ctf_fit_curves(meta):
     except (TypeError, ValueError):
         return None, None, None
 
-    # Electron wavelength (Å) from accelerating voltage (relativistic)
+    # Electron wavelength (Å), relativistic
     lam = 12.2639 / np.sqrt(volt + 0.97845e-6 * volt * volt)
 
-    # Spatial frequency in 1/Å (freq is cycles/pixel -> divide by pixel size)
+    # Spatial frequency in 1/Å (freq is cycles/pixel)
     s = freq / max(pixel, 1e-6)
 
-    # CTF: gamma = pi*lambda*s^2*(defocus - 0.5*lambda^2*s^2*Cs)
+    # Analytical CTF^2
     gamma = (np.pi * lam * s**2 * defocus
              - 0.5 * np.pi * lam**3 * s**4 * cs)
     amp_term = np.arcsin(np.clip(amp, 0, 1))
-    ctf = np.sin(gamma + phase + amp_term)
-    ctf2 = ctf**2
+    ctf2 = np.sin(gamma + phase + amp_term)**2
 
-    # Background-subtracted experimental curve (interpolate bg onto PS1D grid)
-    exp_curve = ps.copy()
+    # Subtract background if present (often zero in WarpTools output)
+    exp = ps.copy()
     bgf, bgv = meta.get('bg_freq'), meta.get('bg_val')
-    if bgf is not None and bgv is not None:
-        bg_interp = np.interp(freq, bgf, bgv)
-        exp_curve = ps - bg_interp
+    if bgf is not None and bgv is not None and not np.allclose(bgv, 0):
+        exp = exp - np.interp(freq, bgf, bgv)
 
-    # Fitted curve: CTF^2 scaled by the simulated scale envelope
-    fitted = ctf2
+    # Flatten the amplitude decay by dividing by the scale envelope, so the
+    # high-frequency Thon rings appear at full amplitude (Warp-GUI style).
     scf, scv = meta.get('scale_freq'), meta.get('scale_val')
+    fit_lo = None
     if scf is not None and scv is not None:
-        scale_interp = np.interp(freq, scf, scv)
-        fitted = ctf2 * scale_interp
+        scale_on = np.interp(freq, scf, scv)
+        scale_on = np.where(scale_on <= 0, np.nan, scale_on)
+        exp = exp / scale_on
+        fit_lo = float(scf.min())   # fit region starts where the scale begins
 
-    return s, exp_curve, fitted
+    # Restrict to the fitted region (drop the low-frequency rolloff spike that
+    # otherwise dominates the display)
+    if fit_lo is not None:
+        mask = freq >= fit_lo
+    else:
+        mask = np.ones_like(freq, dtype=bool)
+    s_m, exp_m, ctf2_m = s[mask], exp[mask], ctf2[mask]
+
+    # Normalise experimental robustly to ~[0,1] (percentiles avoid any spike)
+    finite = exp_m[np.isfinite(exp_m)]
+    if finite.size:
+        lo, hi = np.percentile(finite, 2), np.percentile(finite, 98)
+        if hi > lo:
+            exp_m = np.clip((exp_m - lo) / (hi - lo), 0, 1)
+    # CTF^2 is already in [0,1]
+    return s_m, exp_m, ctf2_m
 
 
 def load_motion_json(json_path):
@@ -897,8 +918,10 @@ class PlotsCanvas(FigureCanvasQTAgg):
 
     def __init__(self, parent=None):
         fig = plt.Figure(figsize=(5, 8), facecolor=C_PANEL)
-        fig.subplots_adjust(left=0.16, right=0.97, top=0.97, bottom=0.06,
-                            hspace=0.45)
+        # Wider plot area (less wasted margin) so the axes are centred and
+        # use the full panel width.
+        fig.subplots_adjust(left=0.13, right=0.98, top=0.96, bottom=0.07,
+                            hspace=0.55)
         self.ax_ctf = fig.add_subplot(411)
         self.ax_res = fig.add_subplot(412)
         self.ax_def = fig.add_subplot(413)
@@ -912,7 +935,7 @@ class PlotsCanvas(FigureCanvasQTAgg):
         ax.set_facecolor(C_PANEL)
         for sp in ax.spines.values():
             sp.set_edgecolor('#334155')
-        ax.tick_params(colors=C_TEXT, labelsize=6)
+        ax.tick_params(colors=C_TEXT, labelsize=9)
         ax.xaxis.label.set_color(C_TEXT)
         ax.yaxis.label.set_color(C_TEXT)
 
@@ -926,30 +949,26 @@ class PlotsCanvas(FigureCanvasQTAgg):
         current_meta : parsed frame meta dict for the active tilt (CTF curves)
         current_color: hex colour for the active tilt (fit line colour)
         """
+        LBL = 10   # axis label font size
         # ---- 1) CTF fit for the current tilt ----
         ax = self.ax_ctf
         ax.cla(); self._style_axes(ax)
         s, exp_curve, fitted = compute_ctf_fit_curves(current_meta or {})
         if s is not None:
-            # Normalise both curves to [0,1] over the fitted range for display
-            def _norm(a):
-                a = np.asarray(a, dtype=float)
-                lo, hi = np.nanmin(a), np.nanmax(a)
-                return (a - lo) / (hi - lo) if hi > lo else a * 0
-            ax.plot(s, _norm(exp_curve), color=C_TEXT, lw=0.8,
-                    label='experimental')
-            ax.plot(s, _norm(fitted), color=current_color, lw=1.0,
-                    label='fitted')
+            # curves arrive pre-normalised to ~[0,1] (Intensity)
+            ax.plot(s, exp_curve, color=C_TEXT, lw=0.9, label='experimental')
+            ax.plot(s, fitted, color=current_color, lw=1.1, label='fitted CTF')
             ax.set_xlim(s.min(), s.max())
-            ax.set_ylim(-0.05, 1.05)
-            ax.legend(fontsize=5, loc='upper right', framealpha=0.2,
+            ax.set_ylim(-0.05, 1.08)
+            ax.legend(fontsize=8, loc='upper right', framealpha=0.85,
+                      facecolor=C_PANEL, edgecolor='#334155',
                       labelcolor=C_TEXT)
         else:
-            ax.text(0.5, 0.5, 'no CTF curve', color=C_DIM, fontsize=7,
+            ax.text(0.5, 0.5, 'no CTF curve', color=C_DIM, fontsize=9,
                     ha='center', va='center', transform=ax.transAxes)
-        ax.set_ylabel('CTF fit', fontsize=6)
-        ax.set_xlabel('spatial freq (1/\u00c5)', fontsize=6)
-        ax.set_yticks([])
+        ax.set_ylabel('Intensity', fontsize=LBL)
+        ax.set_xlabel('spatial frequency (1/\u00c5)', fontsize=LBL)
+        ax.set_yticks([0, 0.5, 1.0])
 
         # ---- 2-4) scatter plots vs tilt angle ----
         specs = [
@@ -965,14 +984,14 @@ class PlotsCanvas(FigureCanvasQTAgg):
                     continue
                 xs.append(angles[i]); ys.append(v); cs.append(colours[i])
             if xs:
-                ax.scatter(xs, ys, c=cs, s=14, edgecolors='none', zorder=3)
+                ax.scatter(xs, ys, c=cs, s=22, edgecolors='none', zorder=3)
                 # enlarge the current tilt's point
                 if current_idx < len(values) and values[current_idx] is not None:
                     ax.scatter([angles[current_idx]], [values[current_idx]],
-                               c=[current_color], s=70, edgecolors=C_TEXT,
-                               linewidths=0.8, zorder=5)
-            ax.set_ylabel(ylabel, fontsize=6)
-            ax.set_xlabel('tilt angle (\u00b0)', fontsize=6)
+                               c=[current_color], s=95, edgecolors=C_TEXT,
+                               linewidths=1.0, zorder=5)
+            ax.set_ylabel(ylabel, fontsize=LBL)
+            ax.set_xlabel('tilt angle (\u00b0)', fontsize=LBL)
             ax.margins(x=0.03)
 
         self.draw_idle()

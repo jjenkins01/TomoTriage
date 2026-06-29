@@ -156,7 +156,7 @@ warp_tiltseries                                  Tilt-series processing dir
 └── tomogram01.xml                               Tilt-series XML (<UseTilt> — exclusions saved here)
 ```
 
-> The visualiser displays the per-tilt images from `average/` and saves exclusions to the tilt-series `.xml`. It does **not** read the `.st` stack in`tiltstack/` — that stack is produced later by `ts_stack`, which reads the`<UseTilt>` exclusions you set here.
+> The visualiser displays the per-tilt images from `average/` and savesexclusions to the tilt-series `.xml`. It does **not** read the `.st` stack in`tiltstack/` — that stack is produced later by `ts_stack`, which reads the`<UseTilt>` exclusions you set here.
 
 Setting shell variables beforehand can help to speed up commands but not essential:
 
@@ -229,24 +229,14 @@ One additional control refines the motion display:
 
 ### Right-hand panel: power spectrum and diagnostic plots
 
-The right-hand side stacks the power spectrum on top of four equal-height
-diagnostic plots, all updating as you navigate between tilts.
+The right-hand side stacks the power spectrum on top of four equal-height diagnostic plots, all updating as you navigate between tilts.
 
-**Power spectrum** (top) — the CTF power spectrum from `powerspectrum/`, shown
-with square-root scaling and cropped to the 128-row signal band so the rings
-are clearly visible.
+**Power spectrum** (top) — the CTF power spectrum from `powerspectrum/`, shown with square-root scaling and cropped to the 128-row signal band so the rings are clearly visible.
 
-**1. CTF fit** — the background-subtracted experimental 1D power spectrum
-overlaid with the fitted CTF² envelope for the current tilt, reconstructed from
-the per-tilt XML. The fitted line is coloured to match the tilt's category
-(green / amber / purple, or red if the tilt is excluded), so you can see fit
-quality at a glance.
+**1. CTF fit** — the experimental 1D power spectrum and the fitted CTF² for the current tilt, plotted as **Intensity (0–1)** vs spatial frequency. The experimental curve is flattened by the fitted envelope so the Thon-ring oscillations show at full amplitude across the whole frequency range and the fitted CTF² is computed from the per-tilt CTF parameters. The fitted line is coloured to match the tilt's category (green /amber / purple, or red if the tilt is excluded), so you can judge fit quality at a glance.
 
 **2–4. CTF resolution (Å), Defocus (µm), and Mean motion (Å) vs tilt angle** —
-scatter plots across the whole series, with each point coloured by its tilt
-category. The current tilt is drawn enlarged so you can locate it. These let you
-spot trends across the tilt range (e.g. resolution degrading at high tilt, or
-motion outliers).
+scatter plots across the whole series, with each point coloured by its tilt category. The current tilt is drawn enlarged so you can locate it. These let you spot trends across the tilt range (e.g. resolution degrading at high tilt, or motion outliers).
 
 ### Overview bar
 
@@ -306,17 +296,13 @@ Lists all tilt series found in the processing directory. Click a name to switch 
 
 ## What gets saved
 
-When you press **Save** or **Quit+Save**, exclusions are written to the
-tilt-series XML for the current series:
+When you press **Save** or **Quit+Save**, exclusions are written to the tilt-series XML for the current series:
 
 **Tilt-series XML `<UseTilt>`** — set to `False` for each excluded tilt and `True` for included tilts. This is WarpTools' native exclusion mechanism: `ts_stack`, `ts_ctf`, and `ts_reconstruct` all read `<UseTilt>` and skip the tilts marked `False`. The XML is written in WarpTools' exact format (first value on the opening-tag line, last value on the closing-tag line) so it parses correctly.
 
 > **Note:** the visualiser does **not** modify the `.tomostar` file. Earlier versions removed excluded rows from the tomostar, but this shortened it relative to the full-length `<UseTilt>` list and broke `ts_stack`. Keeping the tomostar intact and recording exclusions only in `<UseTilt>` is the robust approach and round-trips correctly across sessions.
 
-A timestamped backup of the original XML is saved before each write. Backups
-go into an `xml_original_backups/` subdirectory (created automatically when the
-tool starts) alongside the tilt-series XML, so they don't clutter the XML
-directory:
+A timestamped backup of the original XML is saved before each write. Backups go into an `xml_original_backups/` subdirectory (created automatically when the tool starts) alongside the tilt-series XML, so they don't clutter the XML directory:
 
 ```
 warp_tiltseries/
