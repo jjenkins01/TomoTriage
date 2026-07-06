@@ -45,13 +45,6 @@ are documented here.
     reordered list.
 - **New `--loss_dir` option** pointing at miss-alignment's
   `*_alignment_loss.json` files.
-
-### Notes
-- A per-tilt defocus-gradient overlay was considered but not added: standard
-  WarpTools `ts_ctf` fits a single defocus per tilt (`GridCTF` is 1x1 spatially),
-  so there is no across-image defocus map in the metadata to display. Per-tilt
-  defocus remains available in the right-hand plots.
-
 ---
 
 ## [2.0.0] - 2026-07-05
