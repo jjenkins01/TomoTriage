@@ -5,6 +5,28 @@ are documented here.
 
 ---
 
+## [2.2.0] - 2026-07-06
+
+### Added
+- **Startup splash screen.** TomoTriage shows a logo splash for 5 seconds on
+  launch. It looks for `logo.png` next to the script by default; point it
+  elsewhere with `--logo IMG`, or skip it with `--no_splash`.
+- **Exclude-by-category across ALL datasets.** A second row of buttons applies a
+  category exclusion (purple / amber / orange) to every loaded dataset at once,
+  after a confirmation dialog. It then offers to save the exclusions to all
+  affected tilt-series XMLs in one step.
+
+### Fixed
+- **Exclusions now restore correctly after alignment.** miss-alignment can shift
+  every tilt angle by a constant refined offset (e.g. ~10 deg), which previously
+  broke TomoTriage's angle-based matching of `<UseTilt>` to the tomostar tilts —
+  so exclusions silently failed to restore in post-alignment mode. Matching is
+  now rank-based when the tilt counts are equal (the normal case), which is
+  immune to a constant angle offset, with offset-compensated angle matching as a
+  fallback for reduced stacks. Pre-alignment behaviour is unchanged.
+
+---
+
 ## [2.1.0] - 2026-07-06
 
 ### Added
@@ -23,6 +45,12 @@ are documented here.
     reordered list.
 - **New `--loss_dir` option** pointing at miss-alignment's
   `*_alignment_loss.json` files.
+
+### Notes
+- A per-tilt defocus-gradient overlay was considered but not added: standard
+  WarpTools `ts_ctf` fits a single defocus per tilt (`GridCTF` is 1x1 spatially),
+  so there is no across-image defocus map in the metadata to display. Per-tilt
+  defocus remains available in the right-hand plots.
 
 ---
 

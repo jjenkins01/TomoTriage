@@ -72,7 +72,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QListWidget,
     QPushButton, QCheckBox, QComboBox, QHBoxLayout, QVBoxLayout,
     QSizePolicy, QSplitter, QStatusBar,
-    QDialog, QGridLayout, QColorDialog
+    QDialog, QGridLayout, QColorDialog, QMessageBox, QSplashScreen
 )
 from PyQt5.QtGui import (
     QImage, QPixmap, QColor, QPainter, QPen, QPainterPath,
@@ -222,6 +222,29 @@ def _angle_key(angle):
     return round(float(angle), 1)
 
 
+def _estimate_angle_offset(stack_angles, xml_angles):
+    """
+    Estimate a constant offset such that xml_angle ~= stack_angle + offset.
+
+    miss-alignment can shift every tilt angle by a constant (a refined
+    stage/axis offset), so the XML's angles no longer equal the tomostar's
+    nominal angles. This is robust to one list being a subset of the other and
+    to large offsets (bigger than the tilt spacing): the true offset is the
+    pairwise (xml - stack) difference shared by the most tilt pairs (a simple
+    voting/Hough scheme). Returns the offset in degrees, or 0.0 if unknown.
+    """
+    if not stack_angles or not xml_angles:
+        return 0.0
+    votes = {}
+    for sa in stack_angles:
+        for xa in xml_angles:
+            d = round(xa - sa, 1)
+            votes[d] = votes.get(d, 0) + 1
+    if not votes:
+        return 0.0
+    return max(votes.items(), key=lambda kv: kv[1])[0]
+
+
 def update_xml_usetilt(xml_path, excluded, tilt_angles=None):
     """
     Write exclusion state to <UseTilt> in the tilt-series XML.
@@ -246,19 +269,34 @@ def update_xml_usetilt(xml_path, excluded, tilt_angles=None):
         xml_angles = _read_xml_angle_list(root, 'Angles')
 
         if tilt_angles is not None and xml_angles and \
-                len(xml_angles) == len(existing):
-            # Angle-based mapping: build {angle_key: excluded} from the stack
+                len(xml_angles) == len(existing) == len(excluded):
+            # Rank-based mapping (robust to a constant angle offset applied by
+            # miss-alignment). Both the stack tilts and the XML entries are
+            # sorted by angle; the k-th angle-sorted stack tilt corresponds to
+            # the k-th angle-sorted XML entry. A constant offset is monotonic,
+            # so it preserves this ordering.
+            stack_order = sorted(range(len(excluded)),
+                                 key=lambda i: tilt_angles[i])
+            xml_order = sorted(range(len(xml_angles)),
+                               key=lambda j: xml_angles[j])
+            updated = list(existing)
+            for rank, stack_idx in enumerate(stack_order):
+                xml_pos = xml_order[rank]
+                updated[xml_pos] = 'False' if excluded[stack_idx] else 'True'
+        elif tilt_angles is not None and xml_angles:
+            # Fallback for a reduced stack (fewer tilts than the XML template):
+            # match by angle, compensating for any constant offset.
+            offset = _estimate_angle_offset(list(tilt_angles), xml_angles)
             excl_by_angle = {}
             for i, ang in enumerate(tilt_angles):
                 if i < len(excluded):
-                    excl_by_angle[_angle_key(ang)] = excluded[i]
+                    excl_by_angle[_angle_key(ang + offset)] = excluded[i]
             updated = []
             for j, ang in enumerate(xml_angles):
                 key = _angle_key(ang)
                 if key in excl_by_angle:
                     updated.append('False' if excl_by_angle[key] else 'True')
                 else:
-                    # Tilt not present in the stack — keep prior value
                     updated.append(existing[j] if j < len(existing) else 'True')
         else:
             # Legacy positional mapping (orderings assumed identical)
@@ -315,12 +353,23 @@ def read_usetilt_from_xml(xml_path, n, tilt_angles=None):
         xml_angles = _read_xml_angle_list(root, 'Angles')
 
         if tilt_angles is not None and xml_angles and \
-                len(xml_angles) == len(vals):
-            # Build {angle_key: excluded} from the XML, then look up each
-            # stack tilt's angle
+                len(xml_angles) == len(vals) == n:
+            # Rank-based mapping (robust to a constant angle offset from
+            # miss-alignment): pair the k-th angle-sorted stack tilt with the
+            # k-th angle-sorted XML entry.
+            stack_order = sorted(range(n), key=lambda i: tilt_angles[i])
+            xml_order = sorted(range(len(xml_angles)),
+                               key=lambda j: xml_angles[j])
+            for rank, stack_idx in enumerate(stack_order):
+                xml_pos = xml_order[rank]
+                excluded[stack_idx] = (vals[xml_pos].lower() == 'false')
+        elif tilt_angles is not None and xml_angles:
+            # Fallback for a reduced stack: offset-compensated angle matching.
+            offset = _estimate_angle_offset(list(tilt_angles[:n]), xml_angles)
             excl_by_angle = {}
             for ang, v in zip(xml_angles, vals):
-                excl_by_angle[_angle_key(ang)] = (v.lower() == 'false')
+                # shift XML angles back into the stack's frame
+                excl_by_angle[_angle_key(ang - offset)] = (v.lower() == 'false')
             for i, ang in enumerate(tilt_angles[:n]):
                 key = _angle_key(ang)
                 if key in excl_by_angle:
@@ -1669,6 +1718,26 @@ class MainWindow(QMainWindow):
         bulk_row.addStretch(1)
         root.addLayout(bulk_row, stretch=0)
 
+        # Second row: exclude a category across ALL loaded datasets at once.
+        # These are destructive/sweeping, so each asks for confirmation.
+        allbulk_row = QHBoxLayout()
+        allbulk_row.setSpacing(6)
+        allbulk_lbl = QLabel("Exclude in ALL datasets:")
+        allbulk_lbl.setStyleSheet(
+            f"color: {C_YELLOW}; font-size: 12px; font-weight: bold; "
+            f"padding: 6px 4px;")
+        allbulk_row.addWidget(allbulk_lbl)
+        self._allbulk_buttons = []
+        for label, category in bulk_specs:
+            b = QPushButton(label)
+            b.clicked.connect(
+                lambda _checked, c=category: self._exclude_category_all(c))
+            self._allbulk_buttons.append((b, category))
+            allbulk_row.addWidget(b)
+        self._restyle_bulk_buttons()
+        allbulk_row.addStretch(1)
+        root.addLayout(allbulk_row, stretch=0)
+
     # ── Keyboard shortcuts (keyPressEvent avoids QListWidget focus issue) ──
 
     def keyPressEvent(self, event):
@@ -1849,11 +1918,94 @@ class MainWindow(QMainWindow):
             f"Excluded {count} {category.replace('_', ' ')} tilt(s)", 3000)
         self.setFocus()
 
+    def _categorise_in(self, s, i):
+        """Category of tilt i within an arbitrary loaded series dict s."""
+        if s['excluded'][i]:
+            return 'excluded'
+        if s['flagged'][i]:
+            return 'flagged'
+        ctf = s['frame_meta'][i].get('ctf_res') if i < len(s['frame_meta']) \
+            else None
+        if ctf:
+            if ctf > 10: return 'ctf_bad'
+            if ctf > 8:  return 'ctf_mod'
+        return 'good'
+
+    def _exclude_category_all(self, category):
+        """
+        Exclude every tilt of the given category across ALL loaded datasets,
+        after confirmation. This is a sweeping action, so it asks first and
+        reports how many tilts across how many series were affected.
+        """
+        label = {'ctf_bad': 'CTF > 10 \u00c5', 'ctf_mod': 'CTF 8\u201310 \u00c5',
+                 'flagged': 'flagged (intensity outlier)'}.get(
+                     category, category)
+        n_series = len(self.series_list)
+        reply = QMessageBox.question(
+            self, "Exclude across all datasets",
+            f"Exclude every '{label}' tilt in ALL {n_series} datasets?\n\n"
+            f"This marks matching tilts as excluded in every series. You can "
+            f"still re-include them per series afterwards, and nothing is "
+            f"written to disk until you Save.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            self.setFocus()
+            return
+
+        # Ensure every series is loaded so we can categorise its tilts
+        total = 0
+        affected_series = 0
+        for idx in range(len(self.series_list)):
+            self._load_series(idx)
+            s = self._cache[idx]
+            count = 0
+            for i in range(s['n']):
+                if not s['excluded'][i] and \
+                        self._categorise_in(s, i) == category:
+                    s['excluded'][i] = True
+                    count += 1
+            if count:
+                affected_series += 1
+                total += count
+        if total:
+            _play_exclude_sound()
+        self._refresh()
+        self.statusBar().showMessage(
+            f"Excluded {total} '{label}' tilt(s) across {affected_series} "
+            f"dataset(s)", 5000)
+
+        # Offer to save all now, since the change spans many series and Save
+        # only writes the current one.
+        if total:
+            save_reply = QMessageBox.question(
+                self, "Save all datasets?",
+                f"Excluded {total} tilt(s) across {affected_series} dataset(s).\n\n"
+                f"Save these exclusions to all affected tilt-series XMLs now?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if save_reply == QMessageBox.Yes:
+                self._save_all()
+        self.setFocus()
+
+    def _save_all(self):
+        """Write exclusions to the XML for every loaded series."""
+        saved = 0
+        for idx in range(len(self.series_list)):
+            if idx not in self._cache:
+                continue
+            s = self._cache[idx]
+            if s.get('ts_xml') and any(s['excluded']):
+                update_xml_usetilt(s['ts_xml'], s['excluded'],
+                                   tilt_angles=s['angles'])
+                saved += 1
+        self.statusBar().showMessage(f"Saved {saved} dataset(s)", 4000)
+
     # ── Colour customisation ─────────────────────────────────────────────────
 
     def _restyle_bulk_buttons(self):
         """Recolour the bulk-exclude buttons from the live theme."""
-        for b, category in getattr(self, '_bulk_buttons', []):
+        buttons = list(getattr(self, '_bulk_buttons', [])) + \
+            list(getattr(self, '_allbulk_buttons', []))
+        for b, category in buttons:
             colour = self.colors[category]
             b.setStyleSheet(f"""
                 QPushButton {{
@@ -1920,16 +2072,65 @@ class MainWindow(QMainWindow):
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _show_splash(app, logo_path=None, seconds=5):
+    """
+    Show a splash screen with the TomoTriage logo for a fixed number of
+    seconds (hard hold) before the main window opens. Returns the splash
+    (already closed) or None if no logo was found.
+
+    Logo resolution order:
+      1. an explicit --logo path
+      2. 'logo.png' / 'tomotriage_logo.png' next to this script
+    If no logo is found, the splash is skipped silently.
+    """
+    from PyQt5.QtCore import QEventLoop, QTimer
+
+    candidates = []
+    if logo_path:
+        candidates.append(logo_path)
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates += [
+        os.path.join(here, 'logo.png'),
+        os.path.join(here, 'tomotriage_logo.png'),
+        os.path.join(here, 'docs', 'images', 'logo.png'),
+    ]
+    logo = next((c for c in candidates if c and os.path.exists(c)), None)
+    if not logo:
+        return None
+
+    pix = QPixmap(logo)
+    if pix.isNull():
+        return None
+    # cap very large logos to a sensible on-screen size
+    if pix.width() > 800:
+        pix = pix.scaledToWidth(800, Qt.SmoothTransformation)
+
+    splash = QSplashScreen(pix)
+    splash.show()
+    app.processEvents()
+
+    # Hard hold for `seconds`, keeping the UI responsive meanwhile
+    loop = QEventLoop()
+    QTimer.singleShot(int(seconds * 1000), loop.quit)
+    loop.exec_()
+
+    return splash
+
+
 def run_batch(tomostar_dir, frame_dir, xml_dir=None,
-              sigma=3.0, contrast_lo=2, contrast_hi=98, loss_dir=None):
+              sigma=3.0, contrast_lo=2, contrast_hi=98, loss_dir=None,
+              logo=None, splash_seconds=5):
     pairs = find_tilt_series(tomostar_dir, frame_dir, xml_dir)
     if not pairs:
         print(f"[ERROR] No .tomostar files in {tomostar_dir}"); sys.exit(1)
     print(f"Found {len(pairs)} tilt series")
     app = QApplication.instance() or QApplication(sys.argv)
+    splash = _show_splash(app, logo, splash_seconds) if splash_seconds else None
     win = MainWindow(pairs, frame_dir, sigma, contrast_lo, contrast_hi,
                      loss_dir=loss_dir, xml_dir=xml_dir)
     win.show()
+    if splash is not None:
+        splash.finish(win)
     sys.exit(app.exec_())
 
 
@@ -1962,26 +2163,37 @@ def parse_args():
     p.add_argument('--sigma',       type=float, default=3.0)
     p.add_argument('--contrast_lo', type=int,   default=2)
     p.add_argument('--contrast_hi', type=int,   default=98)
+    p.add_argument('--logo',        metavar='IMG',
+                   help="Path to a splash-screen logo image. Defaults to "
+                        "logo.png next to the script if present.")
+    p.add_argument('--no_splash',   action='store_true',
+                   help="Skip the startup splash screen.")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+    splash_seconds = 0 if args.no_splash else 5
     if args.tomostar_dir:
         run_batch(args.tomostar_dir, args.frame_dir, args.xml_dir,
                   args.sigma, args.contrast_lo, args.contrast_hi,
-                  loss_dir=args.loss_dir)
+                  loss_dir=args.loss_dir,
+                  logo=args.logo, splash_seconds=splash_seconds)
     else:
         ts_xml = args.xml
         if not ts_xml:
             auto = os.path.splitext(args.tomostar)[0] + '.xml'
             if os.path.exists(auto): ts_xml = auto
         app = QApplication.instance() or QApplication(sys.argv)
+        splash = _show_splash(app, args.logo, splash_seconds) \
+            if splash_seconds else None
         win = MainWindow([(args.tomostar, ts_xml)],
                          args.frame_dir, args.sigma,
                          args.contrast_lo, args.contrast_hi,
                          loss_dir=args.loss_dir, xml_dir=args.xml_dir)
         win.show()
+        if splash is not None:
+            splash.finish(win)
         sys.exit(app.exec_())
 
 

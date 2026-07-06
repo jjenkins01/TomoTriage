@@ -157,7 +157,7 @@ warp_tiltseries                                  Tilt-series processing dir
 └── tomogram01.xml                               Tilt-series XML (<UseTilt> — exclusions saved here)
 ```
 
-> The visualiser displays the per-tilt images from `average/` and saves exclusions to the tilt-series `.xml`. It does **not** read the `.st` stack in`tiltstack/` — that stack is produced later by `ts_stack`, which reads the`<UseTilt>` exclusions you set here.
+> The visualiser displays the per-tilt images from `average/` and saves exclusions to the tilt-series `.xml`. It does **not** read the `.st` stack in `tiltstack/` — that stack is produced later by `ts_stack`, which reads the `<UseTilt>` exclusions you set here.
 
 Setting shell variables beforehand can help to speed up commands but not essential:
 
@@ -184,8 +184,7 @@ tomotriage \
 
 ### Batch mode — after alignment (ranking includes the alignment loss)
 
-Point `--loss_dir` at miss-alignment's `*_alignment_loss.json` files to rank the
-datasets on CTF, motion, **and** alignment loss:
+Point `--loss_dir` at miss-alignment's `*_alignment_loss.json` files to rank the datasets on CTF, motion, **and** alignment loss:
 
 ```bash
 tomotriage \
@@ -217,6 +216,8 @@ tomotriage \
 | `--sigma FLOAT` | Sigma for auto-flagging intensity outliers (default: 3.0) |
 | `--contrast_lo INT` | Lower percentile for image contrast (default: 2) |
 | `--contrast_hi INT` | Upper percentile for image contrast (default: 98) |
+| `--logo IMG` | Path to a splash-screen logo image (defaults to `logo.png` next to the script) |
+| `--no_splash` | Skip the startup splash screen |
 
 ---
 
@@ -248,10 +249,11 @@ The right-hand side stacks the power spectrum on top of four equal-height diagno
 
 **Power spectrum** (top) — the CTF power spectrum from `powerspectrum/`, shown with square-root scaling and cropped to the 128-row signal band so the rings are clearly visible.
 
-**1. CTF fit** — the experimental 1D power spectrum and the fitted CTF² for the current tilt, plotted as **Intensity** vs spatial frequency, following Warp's fitting convention. The experimental curve is the stored 1D power spectrum with
-the fitted background subtracted; the fitted curve is the analytical CTF² multiplied by the fitted scale envelope. Both share the same envelope and decay together across the full frequency range, just as in the Warp GUI (low high-frequency amplitude is normal and expected). The fitted line is coloured to match the tilt's category (green / amber / purple, or red if the tilt is excluded), so you can judge fit quality at a glance.
+**1. CTF fit** — the experimental 1D power spectrum and the fitted CTF² for the current tilt, plotted as **Intensity** vs spatial frequency, following Warp's fitting convention. The experimental curve is the stored 1D power spectrum with the fitted background subtracted; the fitted curve is the analytical CTF²
+multiplied by the fitted scale envelope. Both share the same envelope and decay together across the full frequency range, just as in the Warp GUI (low high-frequency amplitude is normal and expected). The fitted line is coloured to match the tilt's category (green / amber / purple, or red if the tilt is excluded), so you can judge fit quality at a glance.
 
-**2–4. CTF resolution (Å), Defocus (µm), and Mean motion (Å) vs tilt angle** — scatter plots across the whole series, with each point coloured by its tilt category. The current tilt is drawn enlarged so you can locate it. These let you spot trends across the tilt range (e.g. resolution degrading at high tilt, or motion outliers).
+**2–4. CTF resolution (Å), Defocus (µm), and Mean motion (Å) vs tilt angle** —
+scatter plots across the whole series, with each point coloured by its tilt category. The current tilt is drawn enlarged so you can locate it. These let you spot trends across the tilt range (e.g. resolution degrading at high tilt, or motion outliers).
 
 ### Overview bar
 
@@ -279,11 +281,13 @@ A row of coloured buttons below the main controls excludes every tilt of a given
 
 These act on the current tilt series and respect existing exclusions (already excluded tilts are left as-is). The result is saved to `<UseTilt>` like any other exclusion.
 
+A second row — **"Exclude in ALL datasets"** — applies the same category exclusion to *every* loaded dataset at once. Because this is a sweeping action, it asks for confirmation first, and then offers to save the exclusions to all affected tilt-series XMLs in one step.
+
 ### Tilt series list (ranked)
 
 Lists all tilt series, **ranked by quality with the best at the top** (rank #1 = best). Click a name to switch to it; scroll with the mouse wheel. Each row shows the rank, the series name, its CTF resolution, and — after alignment — the alignment loss.
 
-**How the ranking works.** Each series is scored on up to three metrics, all "lower is better": **CTF resolution**, **motion**, and the**miss-alignment loss**. Each metric is ranked separately across all series, and the ranks are averaged into an overall rank. This avoids any single metric with a large numeric range dominating.
+**How the ranking works.** Each series is scored on up to three metrics, all "lower is better": **CTF resolution**, **motion**, and the **miss-alignment loss**. Each metric is ranked separately across all series, and the ranks are averaged into an overall rank. This avoids any single metric with a large numeric range dominating.
 
 **Stage auto-detection.** TomoTriage detects whether alignment has been run:
 
