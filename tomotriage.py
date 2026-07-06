@@ -2074,16 +2074,19 @@ class MainWindow(QMainWindow):
 
 def _show_splash(app, logo_path=None, seconds=5):
     """
-    Show a splash screen with the TomoTriage logo for a fixed number of
-    seconds (hard hold) before the main window opens. Returns the splash
-    (already closed) or None if no logo was found.
+    Compose and show the TomoTriage splash screen for a fixed number of
+    seconds (hard hold) before the main window opens.
+
+    The splash is built in code around the bare wordmark image: the wordmark is
+    centred on a black card with a neon-blue border, and a white caption is
+    drawn underneath. Returns the splash (still shown; caller finishes it) or
+    None if no wordmark image is found (splash skipped entirely).
 
     Logo resolution order:
       1. an explicit --logo path
-      2. 'logo.png' / 'tomotriage_logo.png' next to this script
-    If no logo is found, the splash is skipped silently.
+      2. 'logo.png' next to this script
     """
-    from PyQt5.QtCore import QEventLoop, QTimer
+    from PyQt5.QtCore import QEventLoop, QTimer, QRectF
 
     candidates = []
     if logo_path:
@@ -2092,20 +2095,62 @@ def _show_splash(app, logo_path=None, seconds=5):
     candidates += [
         os.path.join(here, 'logo.png'),
         os.path.join(here, 'tomotriage_logo.png'),
-        os.path.join(here, 'docs', 'images', 'logo.png'),
     ]
     logo = next((c for c in candidates if c and os.path.exists(c)), None)
     if not logo:
+        return None   # skip splash entirely if the wordmark is missing
+
+    wordmark = QPixmap(logo)
+    if wordmark.isNull():
         return None
 
-    pix = QPixmap(logo)
-    if pix.isNull():
-        return None
-    # cap very large logos to a sensible on-screen size
-    if pix.width() > 800:
-        pix = pix.scaledToWidth(800, Qt.SmoothTransformation)
+    # ---- Layout constants ----
+    NEON   = QColor('#00e5ff')   # neon-blue border
+    BLACK  = QColor('#000000')
+    WHITE  = QColor('#ffffff')
+    CARD_W       = 900           # overall splash width (px)
+    BORDER       = 10            # neon border thickness
+    PAD          = 26            # inner black padding around the wordmark
+    CAPTION_H    = 54            # height of the caption band
+    CAPTION_TEXT = ("TomoTriage - an interactive quality control tool "
+                    "for tilt series data")
 
-    splash = QSplashScreen(pix)
+    # Scale the wordmark to fit the inner width, preserving aspect ratio
+    inner_w = CARD_W - 2 * (BORDER + PAD)
+    scaled = wordmark.scaledToWidth(inner_w, Qt.SmoothTransformation)
+    card_h = BORDER + PAD + scaled.height() + PAD + CAPTION_H + BORDER
+
+    # ---- Compose the card ----
+    canvas = QPixmap(CARD_W, card_h)
+    canvas.fill(NEON)   # border colour shows as the outer frame
+
+    painter = QPainter(canvas)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+
+    # black interior (inside the neon border)
+    painter.fillRect(BORDER, BORDER,
+                     CARD_W - 2 * BORDER, card_h - 2 * BORDER, BLACK)
+
+    # wordmark, centred horizontally in the padded area
+    wx = (CARD_W - scaled.width()) // 2
+    wy = BORDER + PAD
+    painter.drawPixmap(wx, wy, scaled)
+
+    # caption, white, centred in the caption band below the wordmark
+    font = QFont()
+    font.setPointSize(13)
+    font.setBold(True)
+    painter.setFont(font)
+    painter.setPen(WHITE)
+    cap_top = wy + scaled.height() + PAD
+    cap_rect = QRectF(BORDER, cap_top,
+                      CARD_W - 2 * BORDER, CAPTION_H)
+    painter.drawText(cap_rect, Qt.AlignCenter, CAPTION_TEXT)
+    painter.end()
+
+    splash = QSplashScreen(canvas)
+    splash.setWindowFlag(Qt.WindowStaysOnTopHint, True)
     splash.show()
     app.processEvents()
 

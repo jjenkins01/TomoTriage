@@ -252,8 +252,7 @@ The right-hand side stacks the power spectrum on top of four equal-height diagno
 **1. CTF fit** — the experimental 1D power spectrum and the fitted CTF² for the current tilt, plotted as **Intensity** vs spatial frequency, following Warp's fitting convention. The experimental curve is the stored 1D power spectrum with the fitted background subtracted; the fitted curve is the analytical CTF²
 multiplied by the fitted scale envelope. Both share the same envelope and decay together across the full frequency range, just as in the Warp GUI (low high-frequency amplitude is normal and expected). The fitted line is coloured to match the tilt's category (green / amber / purple, or red if the tilt is excluded), so you can judge fit quality at a glance.
 
-**2–4. CTF resolution (Å), Defocus (µm), and Mean motion (Å) vs tilt angle** —
-scatter plots across the whole series, with each point coloured by its tilt category. The current tilt is drawn enlarged so you can locate it. These let you spot trends across the tilt range (e.g. resolution degrading at high tilt, or motion outliers).
+**2–4. CTF resolution (Å), Defocus (µm), and Mean motion (Å) vs tilt angle** — scatter plots across the whole series, with each point coloured by its tilt category. The current tilt is drawn enlarged so you can locate it. These let you spot trends across the tilt range (e.g. resolution degrading at high tilt, or motion outliers).
 
 ### Overview bar
 

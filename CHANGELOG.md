@@ -5,6 +5,19 @@ are documented here.
 
 ---
 
+## [2.3.0] - 2026-07-06
+
+### Changed
+- **Composed splash screen.** The startup splash is now built in code around the
+  bare `logo.png` wordmark: the wordmark is centred on a black card with a
+  neon-blue border and a white caption underneath ("TomoTriage - an interactive
+  quality control tool for tilt series data"). Only the bare wordmark image is
+  needed; the border and caption are drawn programmatically. It still holds for
+  5 seconds, honours `--logo` and `--no_splash`, and skips entirely if
+  `logo.png` is not found.
+
+---
+
 ## [2.2.0] - 2026-07-06
 
 ### Added
