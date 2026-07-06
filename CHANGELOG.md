@@ -5,6 +5,27 @@ are documented here.
 
 ---
 
+## [2.1.0] - 2026-07-06
+
+### Added
+- **Automatic dataset ranking.** The tilt-series list is now ranked by quality,
+  with the best datasets at the top (rank #1 = best). Each series is scored on
+  CTF resolution, motion, and — once alignment has been run — the miss-alignment
+  loss. All three are "lower is better"; each metric is ranked separately and
+  the ranks are averaged into an overall rank.
+  - **Auto-detects the processing stage.** If miss-alignment loss files are
+    present (via `--loss_dir`), ranking runs in post-alignment mode (CTF +
+    motion + loss), reading updated CTF/motion from the tilt-series XMLs. With
+    no loss files it ranks pre-alignment on CTF + motion from the per-frame
+    XMLs. The list header shows which mode is active.
+  - The list shows each series' rank, name, CTF resolution, and (post-alignment)
+    loss. Selecting/navigating and saving exclusions work unchanged on the
+    reordered list.
+- **New `--loss_dir` option** pointing at miss-alignment's
+  `*_alignment_loss.json` files.
+
+---
+
 ## [2.0.0] - 2026-07-05
 
 ### Changed

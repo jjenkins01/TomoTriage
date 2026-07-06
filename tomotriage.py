@@ -415,6 +415,147 @@ def read_frame_xml(xml_path):
     return meta
 
 
+# ---------------------------------------------------------------------------
+# Post-alignment metrics: alignment loss + tilt-series CTF/motion, and ranking
+# ---------------------------------------------------------------------------
+
+def read_alignment_loss(loss_dir, series_name):
+    """
+    Read a miss-alignment '<series>_alignment_loss.json' and return its
+    final_loss (lower = better), or None if unavailable. miss-alignment writes
+    one JSON per tilt series; final_loss is a precision-weighted model score
+    from the alignment optimisation.
+    """
+    if not loss_dir or not os.path.isdir(loss_dir):
+        return None
+    # miss-alignment names the file '<series>_alignment_loss.json'
+    candidates = [
+        os.path.join(loss_dir, f"{series_name}_alignment_loss.json"),
+        os.path.join(loss_dir, f"{series_name}.json"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                fl = data.get('final_loss')
+                return float(fl) if fl is not None else None
+            except Exception:
+                return None
+    return None
+
+
+def read_tiltseries_ctf_motion(xml_path):
+    """
+    Read series-level CTF resolution and a motion summary from a WarpTools
+    *tilt-series* XML (the post-alignment / post-ts_ctf file). Returns
+    (ctf_res, motion) with either possibly None.
+
+    CTF: the root 'CTFResolutionEstimate' attribute (updated by ts_ctf).
+    Motion: mean absolute local motion from GridMovementX/Y if present, else
+    None. This is a summary for ranking, not the per-tilt overlay data.
+    """
+    ctf_res = None
+    motion = None
+    if not xml_path or not os.path.exists(xml_path):
+        return ctf_res, motion
+    try:
+        root = ET.parse(xml_path).getroot()
+        c = root.attrib.get('CTFResolutionEstimate')
+        if c:
+            v = float(c)
+            if v > 0:
+                ctf_res = v
+        gx = root.find('.//GridMovementX')
+        gy = root.find('.//GridMovementY')
+        if gx is not None and gy is not None:
+            xs = [float(n.attrib['Value']) for n in gx.findall('Node')
+                  if 'Value' in n.attrib]
+            ys = [float(n.attrib['Value']) for n in gy.findall('Node')
+                  if 'Value' in n.attrib]
+            if xs and ys:
+                mags = [np.hypot(x, y) for x, y in zip(xs, ys)]
+                motion = float(np.mean(mags))
+    except Exception:
+        pass
+    return ctf_res, motion
+
+
+def _ranks_from_values(values):
+    """
+    Given a list of per-series values (lower = better, None = missing), return
+    a list of 1-based ranks (1 = best). Series with a missing value get None.
+    Ties share the average of the ranks they span.
+    """
+    idx_vals = [(i, v) for i, v in enumerate(values) if v is not None]
+    ranks = [None] * len(values)
+    if not idx_vals:
+        return ranks
+    # sort by value ascending (lower is better)
+    idx_vals.sort(key=lambda t: t[1])
+    # assign ranks, averaging ties
+    i = 0
+    n = len(idx_vals)
+    while i < n:
+        j = i
+        while j + 1 < n and idx_vals[j + 1][1] == idx_vals[i][1]:
+            j += 1
+        # positions i..j are tied; ranks are (i+1)..(j+1) -> average
+        avg_rank = (i + 1 + j + 1) / 2.0
+        for k in range(i, j + 1):
+            ranks[idx_vals[k][0]] = avg_rank
+        i = j + 1
+    return ranks
+
+
+def compute_series_ranking(metrics):
+    """
+    Combine per-series metrics into an overall ranking (1 = best).
+
+    metrics: list of dicts, one per series, each with keys:
+      'ctf'    : CTF resolution (A, lower better) or None
+      'motion' : motion summary (A, lower better) or None
+      'loss'   : alignment final_loss (lower better) or None
+
+    Auto-detects stage: if ANY series has a loss value, loss is included as a
+    third ranking component (post-alignment); otherwise ranking uses CTF +
+    motion only (pre-alignment).
+
+    Returns (overall_rank, used_loss) where overall_rank is a list of 1-based
+    integer ranks (1 = best) aligned with the input, and used_loss is True if
+    the loss component was included. Series missing all components rank last.
+    """
+    n = len(metrics)
+    ctf_vals = [m.get('ctf') for m in metrics]
+    mot_vals = [m.get('motion') for m in metrics]
+    loss_vals = [m.get('loss') for m in metrics]
+
+    used_loss = any(v is not None for v in loss_vals)
+
+    ctf_ranks = _ranks_from_values(ctf_vals)
+    mot_ranks = _ranks_from_values(mot_vals)
+    loss_ranks = _ranks_from_values(loss_vals) if used_loss else [None] * n
+
+    # Average the available component ranks per series
+    composite = []
+    for i in range(n):
+        comps = [ctf_ranks[i], mot_ranks[i]]
+        if used_loss:
+            comps.append(loss_ranks[i])
+        present = [c for c in comps if c is not None]
+        composite.append(sum(present) / len(present) if present else None)
+
+    # Final 1..N ranking from the composite (lower composite = better)
+    overall = _ranks_from_values(composite)
+    # Convert to clean integer ranks by ordering; missing -> last
+    order = sorted(range(n),
+                   key=lambda i: (overall[i] is None, overall[i] if overall[i] is not None else 0))
+    final = [None] * n
+    for pos, i in enumerate(order, start=1):
+        final[i] = pos
+    return final, used_loss
+
+
 def compute_ctf_fit_curves(meta):
     """
     Reconstruct the Warp CTF fit display, following Warp's own fitting
@@ -1097,9 +1238,12 @@ class ColorPickerDialog(QDialog):
 class MainWindow(QMainWindow):
 
     def __init__(self, series_list, frame_dir=None,
-                 sigma=3.0, contrast_lo=2, contrast_hi=98):
+                 sigma=3.0, contrast_lo=2, contrast_hi=98,
+                 loss_dir=None, xml_dir=None):
         super().__init__()
         self.series_list = series_list
+        self.loss_dir    = loss_dir
+        self.xml_dir     = xml_dir
         # Normalise frame_dir: if the user pointed it at the average/ subdir,
         # step back to its parent so average/, powerspectrum/ and the per-frame
         # XMLs are all found consistently.
@@ -1134,10 +1278,127 @@ class MainWindow(QMainWindow):
                 except OSError as e:
                     print(f"  [WARN] Could not create backup dir {bdir}: {e}")
 
+        # Compute per-series ranking (auto-detects pre/post alignment) and
+        # reorder the series list so the best datasets appear at the top.
+        self._compute_ranking()
+
         self._load_series(0)
         self._build_ui()
         self._refresh()
         self.setWindowTitle("TomoTriage")
+
+    # ── Ranking ─────────────────────────────────────────────────────────────
+
+    def _series_name(self, tomostar_path):
+        return os.path.splitext(os.path.basename(tomostar_path))[0]
+
+    def _format_series_item(self, i):
+        """Format a series-list row: rank, name, and key metrics."""
+        tp, _ = self.series_list[i]
+        name = self._series_name(tp)
+        rank = self.series_rank[i] if hasattr(self, 'series_rank') else None
+        m = self.series_metrics[i] if hasattr(self, 'series_metrics') else {}
+        rank_str = f"#{rank:>2}" if rank is not None else "  -"
+        # compact metric suffix
+        bits = []
+        if m.get('ctf') is not None:
+            bits.append(f"{m['ctf']:.1f}\u00c5")
+        if m.get('loss') is not None:
+            bits.append(f"L{m['loss']:.2f}")
+        suffix = ("  " + " ".join(bits)) if bits else ""
+        return f"{rank_str}  {name}{suffix}"
+
+    def _compute_ranking(self):
+        """
+        Build a per-series quality ranking from CTF resolution, motion, and
+        (if available) the miss-alignment loss, then reorder self.series_list
+        so rank 1 (best) is first.
+
+        Data sources, auto-detected per series:
+          - loss:   <loss_dir>/<series>_alignment_loss.json  (if --loss_dir given)
+          - post-alignment CTF/motion: the tilt-series XML (if it has ts_ctf
+            results), used when a loss value exists for that series
+          - pre-alignment CTF/motion: aggregated from the per-frame XMLs,
+            used when no loss/post-alignment data is present
+
+        The ranking degrades gracefully: with no loss anywhere it ranks on
+        CTF + motion only (pre-alignment mode).
+        """
+        metrics = []
+        for tp, xp in self.series_list:
+            name = self._series_name(tp)
+            loss = read_alignment_loss(self.loss_dir, name)
+
+            ctf = motion = None
+            # Prefer post-alignment tilt-series XML CTF/motion when this series
+            # has been aligned (loss present) or the XML carries ts_ctf results.
+            ts_ctf, ts_motion = read_tiltseries_ctf_motion(xp)
+            if loss is not None and ts_ctf is not None:
+                ctf, motion = ts_ctf, ts_motion
+            else:
+                # pre-alignment: aggregate CTF/motion from per-frame XMLs
+                ctf, motion = self._preali_series_metrics(tp, xp)
+                # fall back to tilt-series XML values if per-frame unavailable
+                if ctf is None:
+                    ctf = ts_ctf
+                if motion is None:
+                    motion = ts_motion
+            metrics.append({'ctf': ctf, 'motion': motion, 'loss': loss})
+
+        ranks, used_loss = compute_series_ranking(metrics)
+        self._used_loss_in_rank = used_loss
+
+        # Attach rank + metrics to each series, then sort by rank (1 = best)
+        indexed = list(range(len(self.series_list)))
+        rank_of = {i: (ranks[i] if ranks[i] is not None else 10**9)
+                   for i in indexed}
+        order = sorted(indexed, key=lambda i: rank_of[i])
+
+        self.series_list = [self.series_list[i] for i in order]
+        self.series_rank = [ranks[i] for i in order]
+        self.series_metrics = [metrics[i] for i in order]
+
+        n_ranked = sum(1 for r in ranks if r is not None)
+        mode = "post-alignment (CTF + motion + loss)" if used_loss \
+            else "pre-alignment (CTF + motion)"
+        print(f"  Ranked {n_ranked}/{len(self.series_list)} series \u2014 {mode}")
+
+    def _preali_series_metrics(self, tomostar_path, xml_path):
+        """
+        Aggregate per-frame CTF resolution and motion into a single per-series
+        value (median across tilts) for pre-alignment ranking. Reads the
+        per-frame XMLs from frame_dir by movie name. Returns (ctf, motion),
+        either possibly None. Kept lightweight — no image loading.
+        """
+        if not self.frame_dir:
+            return None, None
+        try:
+            col_names, rows = parse_tomostar(tomostar_path)
+        except Exception:
+            return None, None
+        movies = get_movie_names(col_names, rows)
+        if not movies:
+            return None, None
+        ctfs, motions = [], []
+        for mv in movies:
+            stem = os.path.splitext(mv)[0]
+            # per-frame XML lives in frame_dir (or its average/ subdir)
+            fxml = None
+            for md in [self.frame_dir, os.path.join(self.frame_dir, 'average')]:
+                cand = os.path.join(md, stem + '.xml')
+                if os.path.exists(cand):
+                    fxml = cand
+                    break
+            if not fxml:
+                continue
+            m = read_frame_xml(fxml)
+            if m.get('ctf_res'):
+                ctfs.append(m['ctf_res'])
+            if m.get('motion') is not None:
+                motions.append(m['motion'])
+        ctf = float(np.median(ctfs)) if ctfs else None
+        motion = float(np.median(motions)) if motions else None
+        return ctf, motion
 
     # ── Data loading ───────────────────────────────────────────────────────
 
@@ -1274,10 +1535,13 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(4, 4, 4, 4)
         right_layout.setSpacing(4)
-        lbl = QLabel("Tilt Series")
+        rank_mode = "CTF+motion+loss" if getattr(self, '_used_loss_in_rank',
+                                                  False) else "CTF+motion"
+        lbl = QLabel(f"Tilt Series \u2014 ranked ({rank_mode})")
         lbl.setStyleSheet(
-            f"color: {C_TEXT}; font-weight: bold; font-size: 13px;")
+            f"color: {C_TEXT}; font-weight: bold; font-size: 12px;")
         lbl.setAlignment(Qt.AlignCenter)
+        lbl.setWordWrap(True)
         right_layout.addWidget(lbl)
         self.series_list_widget = QListWidget()
         self.series_list_widget.setStyleSheet(f"""
@@ -1289,9 +1553,8 @@ class MainWindow(QMainWindow):
             QListWidget::item:selected {{ background: {C_HOVER}; }}
             QListWidget::item:hover    {{ background: #1a2a3a; }}
         """)
-        for tp, _ in self.series_list:
-            self.series_list_widget.addItem(
-                os.path.splitext(os.path.basename(tp))[0])
+        for i, (tp, _) in enumerate(self.series_list):
+            self.series_list_widget.addItem(self._format_series_item(i))
         self.series_list_widget.setCurrentRow(0)
         self.series_list_widget.currentRowChanged.connect(
             self._on_series_changed)
@@ -1658,13 +1921,14 @@ class MainWindow(QMainWindow):
 # ---------------------------------------------------------------------------
 
 def run_batch(tomostar_dir, frame_dir, xml_dir=None,
-              sigma=3.0, contrast_lo=2, contrast_hi=98):
+              sigma=3.0, contrast_lo=2, contrast_hi=98, loss_dir=None):
     pairs = find_tilt_series(tomostar_dir, frame_dir, xml_dir)
     if not pairs:
         print(f"[ERROR] No .tomostar files in {tomostar_dir}"); sys.exit(1)
     print(f"Found {len(pairs)} tilt series")
     app = QApplication.instance() or QApplication(sys.argv)
-    win = MainWindow(pairs, frame_dir, sigma, contrast_lo, contrast_hi)
+    win = MainWindow(pairs, frame_dir, sigma, contrast_lo, contrast_hi,
+                     loss_dir=loss_dir, xml_dir=xml_dir)
     win.show()
     sys.exit(app.exec_())
 
@@ -1691,6 +1955,10 @@ def parse_args():
     p.add_argument('--xml_dir',     metavar='DIR',
                    help="Directory of tilt-series XML files (batch mode; "
                         "defaults to the tomostar's own directory)")
+    p.add_argument('--loss_dir',    metavar='DIR',
+                   help="Directory of miss-alignment '*_alignment_loss.json' "
+                        "files. When present, the alignment loss is included "
+                        "in the dataset ranking (post-alignment mode).")
     p.add_argument('--sigma',       type=float, default=3.0)
     p.add_argument('--contrast_lo', type=int,   default=2)
     p.add_argument('--contrast_hi', type=int,   default=98)
@@ -1701,7 +1969,8 @@ def main():
     args = parse_args()
     if args.tomostar_dir:
         run_batch(args.tomostar_dir, args.frame_dir, args.xml_dir,
-                  args.sigma, args.contrast_lo, args.contrast_hi)
+                  args.sigma, args.contrast_lo, args.contrast_hi,
+                  loss_dir=args.loss_dir)
     else:
         ts_xml = args.xml
         if not ts_xml:
@@ -1710,7 +1979,8 @@ def main():
         app = QApplication.instance() or QApplication(sys.argv)
         win = MainWindow([(args.tomostar, ts_xml)],
                          args.frame_dir, args.sigma,
-                         args.contrast_lo, args.contrast_hi)
+                         args.contrast_lo, args.contrast_hi,
+                         loss_dir=args.loss_dir, xml_dir=args.xml_dir)
         win.show()
         sys.exit(app.exec_())
 
