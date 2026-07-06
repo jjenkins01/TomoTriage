@@ -283,7 +283,7 @@ These act on the current tilt series and respect existing exclusions (already ex
 
 Lists all tilt series, **ranked by quality with the best at the top** (rank #1 = best). Click a name to switch to it; scroll with the mouse wheel. Each row shows the rank, the series name, its CTF resolution, and — after alignment — the alignment loss.
 
-**How the ranking works.** Each series is scored on up to three metrics, all "lower is better": **CTF resolution**, **motion**, and the**miss-alignment loss**. Each metric is ranked separately across all series, and the ranks are averaged into an overall rank. This avoids any single metric with a large numeric range dominating.
+**How the ranking works.** Each series is scored on up to three metrics, all "lower is better": **CTF resolution**, **motion**, and the **miss-alignment loss**. Each metric is ranked separately across all series, and the ranks are averaged into an overall rank. This avoids any single metric with a large numeric range dominating.
 
 **Stage auto-detection.** TomoTriage detects whether alignment has been run:
 
