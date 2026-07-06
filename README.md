@@ -1,4 +1,4 @@
-# WarpTools Tilt Series Visualiser
+# TomoTriage
 
 An interactive quality control tool for tilt series data processed with [WarpTools](https://github.com/warpem/warp). Inspect tilt images, power spectra, and motion correction results before proceeding to alignment and reconstruction.
 
@@ -24,8 +24,8 @@ An interactive quality control tool for tilt series data processed with [WarpToo
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/jjenkins01/warptools_visualiser.git
-cd warptools_visualiser
+git clone https://github.com/jjenkins01/TomoTriage.git
+cd TomoTriage
 ```
 
 ### 2. Create the conda environment
@@ -34,21 +34,21 @@ Using the provided `environment.yml`:
 
 ```bash
 conda env create -f environment.yml
-conda activate warptools_visualiser
+conda activate tomotriage
 ```
 
 Or manually:
 
 ```bash
-conda create -n warptools_visualiser \
+conda create -n tomotriage \
     python=3.11 pyqt numpy mrcfile matplotlib \
     -c conda-forge -y
-conda activate warptools_visualiser
+conda activate tomotriage
 ```
 
-### 3. Install the `warptools_visualiser` command (recommended)
+### 3. Install the `tomotriage` command (recommended)
 
-Installing the package with `pip` registers a `warptools_visualiser` command so you can launch it from anywhere without typing `python` or the full path:
+Installing the package with `pip` registers a `tomotriage` command so you can launch it from anywhere without typing `python` or the full path:
 
 ```bash
 pip install -e .
@@ -57,16 +57,16 @@ pip install -e .
 The `-e` (editable) flag means `git pull` updates take effect immediately without reinstalling. After this you can run:
 
 ```bash
-warptools_visualiser --tomostar_dir $warp_fs --frame_dir $warp_fs --xml_dir $warp_ts
+tomotriage --tomostar_dir $warp_fs --frame_dir $warp_fs --xml_dir $warp_ts
 ```
 
-> If you prefer not to install, you can always run the script directly with `python warptools_visualiser.py --tomostar_dir $warp_fs ...`
+> If you prefer not to install, you can always run the script directly with `python tomotriage.py --tomostar_dir $warp_fs ...`
 
 ### 4. Verify the installation
 
 ```bash
 python -c "from PyQt5.QtWidgets import QApplication; print('PyQt5 OK')"
-warptools_visualiser --help
+tomotriage --help
 ```
 
 ---
@@ -77,36 +77,36 @@ If you already have a previous version installed and want the latest release fro
 
 ### If you installed with `pip install -e .` (editable mode)
 
-This is the simplest case — the editable install points directly at your local clone, so a `git pull` is all that is needed. The `warptools_visualiser` command picks up the new code automatically.
+This is the simplest case — the editable install points directly at your local clone, so a `git pull` is all that is needed. The `tomotriage` command picks up the new code automatically.
 
 ```bash
-cd warptools_visualiser     # your local clone
+cd TomoTriage     # your local clone
 git pull origin main
 ```
 
-> `git` does not require the conda environment to be active. You only need the environment active when you actually run `warptools_visualiser`.
+> `git` does not require the conda environment to be active. You only need the environment active when you actually run `tomotriage`.
 
 ### If you installed with a regular `pip install .` (non-editable)
 
 A plain install copies the code into the environment, so after pulling you must reinstall for the changes to take effect:
 
 ```bash
-cd warptools_visualiser
+cd TomoTriage
 git pull origin main
-conda activate warptools_visualiser
+conda activate tomotriage
 pip install . --upgrade
 ```
 
 ### If you only downloaded the script (no pip install)
 
-Replace your local `warptools_visualiser.py` with the latest version from the repository, or re-clone:
+Replace your local `tomotriage.py` with the latest version from the repository, or re-clone:
 
 ```bash
-cd warptools_visualiser
+cd TomoTriage
 git pull origin main
 ```
 
-then run it directly with `python warptools_visualiser.py ...`.
+then run it directly with `python tomotriage.py ...`.
 
 ### If the dependencies changed
 
@@ -119,12 +119,12 @@ conda env update -f environment.yml --prune
 ### Checking your version
 
 ```bash
-cd warptools_visualiser
+cd TomoTriage
 git log --oneline -1        # shows the latest commit you have
 git tag --points-at HEAD    # shows the release tag, if any
 ```
 
-Compare against the [releases page](https://github.com/jjenkins01/warptools_visualiser/releases) to see whether a newer version is available.
+Compare against the [releases page](https://github.com/jjenkins01/TomoTriage/releases) to see whether a newer version is available.
 
 ---
 
@@ -156,7 +156,10 @@ warp_tiltseries                                  Tilt-series processing dir
 └── tomogram01.xml                               Tilt-series XML (<UseTilt> — exclusions saved here)
 ```
 
-> The visualiser displays the per-tilt images from `average/` and saves exclusions to the tilt-series `.xml`. It does **not** read the `.st` stack in`tiltstack/` — that stack is produced later by `ts_stack`, which reads the`<UseTilt>` exclusions you set here.
+> The visualiser displays the per-tilt images from `average/` and saves
+> exclusions to the tilt-series `.xml`. It does **not** read the `.st` stack in
+> `tiltstack/` — that stack is produced later by `ts_stack`, which reads the
+> `<UseTilt>` exclusions you set here.
 
 Setting shell variables beforehand can help to speed up commands but not essential:
 
@@ -173,9 +176,9 @@ warp_ts=/path/to/warp_tiltseries
 ### Batch mode — all tilt series in a directory
 
 ```bash
-conda activate warptools_visualiser
+conda activate tomotriage
 
-warptools_visualiser \
+tomotriage \
     --tomostar_dir $warp_fs \
     --frame_dir    $warp_fs \
     --xml_dir      $warp_ts
@@ -184,7 +187,7 @@ warptools_visualiser \
 ### Single tilt series
 
 ```bash
-warptools_visualiser \
+tomotriage \
     --tomostar  $warp_fs/tomogram01.tomostar \
     --frame_dir $warp_fs \
     --xml       $warp_ts/tomogram01.xml
@@ -207,7 +210,7 @@ warptools_visualiser \
 
 ## Interface
 
-![warptools_visualiser GUI](docs/images/warptools_visualiser_gui.png)
+![TomoTriage GUI](docs/images/tomotriage_gui.png)
 
 ### Tilt image panel
 
@@ -233,15 +236,19 @@ The right-hand side stacks the power spectrum on top of four equal-height diagno
 
 **Power spectrum** (top) — the CTF power spectrum from `powerspectrum/`, shown with square-root scaling and cropped to the 128-row signal band so the rings are clearly visible.
 
-**1. CTF fit** — the experimental 1D power spectrum and the fitted CTF² for the current tilt, plotted as **Intensity** vs spatial frequency, following Warp's fitting convention. The experimental curve is the stored 1D power spectrum with the fitted background subtracted; the fitted curve is the analytical CTF² multiplied by the fitted scale envelope. Both share the same envelope and decay together across the full frequency range. The fitted line is coloured to match the tilt's category (green / amber / purple, or red if the tilt is
-excluded), so you can judge fit quality at a glance.
+**1. CTF fit** — the experimental 1D power spectrum and the fitted CTF² for the current tilt, plotted as **Intensity** vs spatial frequency, following Warp's
+fitting convention. The experimental curve is the stored 1D power spectrum with the fitted background subtracted; the fitted curve is the analytical CTF²
+multiplied by the fitted scale envelope. Both share the same envelope and decay together across the full frequency range, just as in the Warp GUI (low
+high-frequency amplitude is normal and expected). The fitted line is coloured to match the tilt's category (green / amber / purple, or red if the tilt is excluded), so you can judge fit quality at a glance.
 
-**2–4. CTF resolution (Å), Defocus (µm), and Mean motion (Å) vs tilt angle** —
-scatter plots across the whole series, with each point coloured by its tilt category. The current tilt is drawn enlarged so you can locate it. These let you spot trends across the tilt range (e.g. resolution degrading at high tilt, or motion outliers).
+**2–4. CTF resolution (Å), Defocus (µm), and Mean motion (Å) vs tilt angle** — scatter plots across the whole series, with each point coloured by its tilt
+category. The current tilt is drawn enlarged so you can locate it. These let you spot trends across the tilt range (e.g. resolution degrading at high tilt, or motion outliers).
 
 ### Overview bar
 
-One coloured bar per tilt, **ordered by tilt angle** — the most negative tilt on the left, 0° in the centre, and the most positive on the right. For a dose-symmetric series (e.g. −60° → +60°) this means the bar mirrors the physical tilt geometry rather than the acquisition order. Sparse angle labels are shown along the axis. **Click any bar to jump directly to that tilt.**
+One coloured bar per tilt, **ordered by tilt angle** — the most negative tilt on the left, 0° in the centre, and the most positive on the right. For a
+dose-symmetric series (e.g. −60° → +60°) this means the bar mirrors the physical tilt geometry rather than the acquisition order. Sparse angle labels
+are shown along the axis. **Click any bar to jump directly to that tilt.**
 
 Colour coding (priority order):
 
@@ -253,7 +260,8 @@ Colour coding (priority order):
 | Amber | CTF fit 8–10 Å |
 | Green | CTF fit ≤ 8 Å |
 
-These colours are **customisable** — click the **Colours…** button to recolour any category with a colour picker. Changes apply live to both the overview bar and the bulk-exclude buttons. Colour choices are session-only and reset to the defaults above on the next launch.
+These colours are **customisable** — click the **Colours…** button to recolour any category with a colour picker. Changes apply live to both the overview bar
+and the bulk-exclude buttons. Colour choices are session-only and reset to the defaults above on the next launch.
 
 ### Bulk exclude-by-colour
 
@@ -304,10 +312,7 @@ tilt-series XML for the current series:
 
 > **Note:** the visualiser does **not** modify the `.tomostar` file. Earlier versions removed excluded rows from the tomostar, but this shortened it relative to the full-length `<UseTilt>` list and broke `ts_stack`. Keeping the tomostar intact and recording exclusions only in `<UseTilt>` is the robust approach and round-trips correctly across sessions.
 
-A timestamped backup of the original XML is saved before each write. Backups
-go into an `xml_original_backups/` subdirectory (created automatically when the
-tool starts) alongside the tilt-series XML, so they don't clutter the XML
-directory:
+A timestamped backup of the original XML is saved before each write. Backups go into an `xml_original_backups/` subdirectory (created automatically when the tool starts) alongside the tilt-series XML, so they don't clutter the XML directory:
 
 ```
 warp_tiltseries/

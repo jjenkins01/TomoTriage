@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "warptools_visualiser"
-version = "1.8.0"
+name = "tomotriage"
+version = "2.0.0"
 description = "An interactive quality control tool for tilt series data processed with WarpTools"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,14 +20,14 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/jjenkins01/warptools_visualiser"
+Repository = "https://github.com/jjenkins01/TomoTriage"
 
 # Expose the GUI as a command-line entry point so users can simply run
-#   warptools_visualiser --tomostar_dir ... --stack_dir ...
-# instead of  python /full/path/to/warptools_visualiser.py
+#   tomotriage --tomostar_dir ... --frame_dir ... --xml_dir ...
+# instead of  python /full/path/to/tomotriage.py
 [project.scripts]
-warptools_visualiser = "warptools_visualiser:main"
+tomotriage = "tomotriage:main"
 
 # Treat the single-file module as a py-module rather than a package
 [tool.setuptools]
-py-modules = ["warptools_visualiser"]
+py-modules = ["tomotriage"]

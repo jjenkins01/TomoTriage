@@ -1,4 +1,4 @@
-name: warptools_visualiser
+name: tomotriage
 channels:
   - conda-forge
   - defaults

@@ -1,6 +1,26 @@
 # Changelog
 
-All notable changes to the WarpTools Tilt Series Visualiser are documented here.
+All notable changes to TomoTriage (formerly WarpTools Tilt Series Visualiser)
+are documented here.
+
+---
+
+## [2.0.0] - 2026-07-05
+
+### Changed
+- **Renamed the project to TomoTriage** (formerly "WarpTools Tilt Series
+  Visualiser"). This is a naming-only release with no change to functionality.
+  - The command-line entry point is now `tomotriage` (was
+    `warptools_visualiser`).
+  - The module file is now `tomotriage.py`.
+  - The conda environment in `environment.yml` is now `tomotriage`.
+  - The GitHub repository is now `TomoTriage`.
+
+  **Upgrade note:** because the command, module, and repository names have all
+  changed, this is a breaking change for anyone using the old name. After
+  pulling, reinstall so the new `tomotriage` command is registered
+  (`pip install -e .` for an editable install), and update any scripts that
+  called `warptools_visualiser` to call `tomotriage` instead.
 
 ---
 
@@ -10,10 +30,9 @@ All notable changes to the WarpTools Tilt Series Visualiser are documented here.
 - **Restructured right-hand panel with diagnostic plots.** The power spectrum
   moves to the top of the right-hand side (cropped to the 128-row signal band),
   and four equal-height plots are shown beneath it:
-  
   1. **CTF fit** — the experimental 1D power spectrum and the fitted CTF² for
      the current tilt, plotted as **Intensity** vs spatial frequency, following
-     the fitting convention: the experimental curve is the stored
+     Warp's own fitting convention: the experimental curve is the stored
      `<PS1D>` with the fitted background subtracted, and the fitted curve is the
      analytical CTF² multiplied by the fitted scale envelope (`<SimulatedScale>`).
      Both curves therefore share the same envelope and decay together with
@@ -23,7 +42,7 @@ All notable changes to the WarpTools Tilt Series Visualiser are documented here.
   2. **CTF resolution (Å)** vs tilt angle
   3. **Defocus (µm)** vs tilt angle
   4. **Mean motion (Å)** vs tilt angle
-  
+
   Plots 2–4 are scatter plots (no connecting lines) with each point coloured to
   match its tilt category; the current tilt is drawn enlarged. All read from the
   per-frame XMLs in `--frame_dir`.
