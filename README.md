@@ -218,6 +218,7 @@ tomotriage \
 | `--contrast_hi INT` | Upper percentile for image contrast (default: 98) |
 | `--logo IMG` | Path to a splash-screen logo image (defaults to `logo.png` next to the script) |
 | `--no_splash` | Skip the startup splash screen |
+| `--io_workers N` | Number of parallel workers for reading ranking metadata at startup (default: 16). Higher can be faster on high-latency network storage; `1` = serial. |
 
 ---
 
@@ -294,6 +295,8 @@ Lists all tilt series, **ranked by quality with the best at the top** (rank #1 =
 - **Post-alignment** (`--loss_dir` given and loss files present): includes the alignment loss as a third component and reads the updated CTF/motion from the tilt-series XMLs. The header reads "ranked (CTF+motion+loss)".
 
 The alignment loss is miss-alignment's own precision-weighted model score (lower = better); it is comparable *within* a single processing run, which is exactly the within-dataset comparison the ranking makes. A series missing all metrics sorts to the bottom.
+
+**Ranking happens in the background.** So the window opens quickly even with many tomograms, the list first appears in file order with the header "Tilt Series — ranking…", and re-sorts into ranked order a moment later once the metadata has been read (in parallel — see `--io_workers`). Whatever series you have selected stays selected when the list re-sorts. On large, network-stored datasets this takes the window from potentially a minute or two down to a second or two.
 
 ---
 

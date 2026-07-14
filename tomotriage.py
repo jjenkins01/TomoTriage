@@ -78,7 +78,7 @@ from PyQt5.QtGui import (
     QImage, QPixmap, QColor, QPainter, QPen, QPainterPath,
     QFont, QPalette
 )
-from PyQt5.QtCore import Qt, QSize, QPointF, pyqtSignal
+from PyQt5.QtCore import Qt, QSize, QPointF, pyqtSignal, QTimer, QThread
 
 import matplotlib
 matplotlib.use('Agg')
@@ -1284,15 +1284,38 @@ class ColorPickerDialog(QDialog):
 # Main window
 # ---------------------------------------------------------------------------
 
+class _RankingThread(QThread):
+    """
+    Background thread that gathers the per-series ranking metrics (the slow,
+    I/O-bound part) without blocking the GUI. It emits the collected metrics
+    back to the main thread, where the ranking is applied and the list
+    re-sorted. Only does filesystem reads; never touches Qt widgets directly.
+    """
+    finished_metrics = pyqtSignal(list)
+
+    def __init__(self, window):
+        super().__init__()
+        self._window = window
+
+    def run(self):
+        try:
+            metrics = self._window._gather_metrics_parallel()
+        except Exception as e:
+            print(f"  [WARN] background ranking failed: {e}")
+            metrics = [{} for _ in self._window.series_list]
+        self.finished_metrics.emit(metrics)
+
+
 class MainWindow(QMainWindow):
 
     def __init__(self, series_list, frame_dir=None,
                  sigma=3.0, contrast_lo=2, contrast_hi=98,
-                 loss_dir=None, xml_dir=None):
+                 loss_dir=None, xml_dir=None, io_workers=16):
         super().__init__()
         self.series_list = series_list
         self.loss_dir    = loss_dir
         self.xml_dir     = xml_dir
+        self.io_workers  = max(1, int(io_workers))
         # Normalise frame_dir: if the user pointed it at the average/ subdir,
         # step back to its parent so average/, powerspectrum/ and the per-frame
         # XMLs are all found consistently.
@@ -1327,14 +1350,22 @@ class MainWindow(QMainWindow):
                 except OSError as e:
                     print(f"  [WARN] Could not create backup dir {bdir}: {e}")
 
-        # Compute per-series ranking (auto-detects pre/post alignment) and
-        # reorder the series list so the best datasets appear at the top.
-        self._compute_ranking()
+        # Start in table order with no ranking yet; the ranking is computed in
+        # the background after the window is shown (see _start_background_ranking).
+        # This lets the window open in ~1-2s instead of waiting for all per-frame
+        # XMLs to be read up front.
+        self.series_rank = [None] * len(self.series_list)
+        self.series_metrics = [{} for _ in self.series_list]
+        self._used_loss_in_rank = False
+        self._ranking_done = False
 
         self._load_series(0)
         self._build_ui()
         self._refresh()
         self.setWindowTitle("TomoTriage")
+
+        # Kick off ranking in the background once the event loop is running.
+        QTimer.singleShot(0, self._start_background_ranking)
 
     # ── Ranking ─────────────────────────────────────────────────────────────
 
@@ -1357,47 +1388,74 @@ class MainWindow(QMainWindow):
         suffix = ("  " + " ".join(bits)) if bits else ""
         return f"{rank_str}  {name}{suffix}"
 
-    def _compute_ranking(self):
+    def _gather_metrics_parallel(self):
         """
-        Build a per-series quality ranking from CTF resolution, motion, and
-        (if available) the miss-alignment loss, then reorder self.series_list
-        so rank 1 (best) is first.
+        Read the per-series ranking metrics (CTF, motion, loss) for every
+        series, in parallel across a thread pool. This is the slow part on a
+        network mount (thousands of per-frame XML reads), and it is I/O-bound,
+        so threads overlap the filesystem latency effectively.
 
-        Data sources, auto-detected per series:
-          - loss:   <loss_dir>/<series>_alignment_loss.json  (if --loss_dir given)
-          - post-alignment CTF/motion: the tilt-series XML (if it has ts_ctf
-            results), used when a loss value exists for that series
-          - pre-alignment CTF/motion: aggregated from the per-frame XMLs,
-            used when no loss/post-alignment data is present
-
-        The ranking degrades gracefully: with no loss anywhere it ranks on
-        CTF + motion only (pre-alignment mode).
+        Returns a list of metric dicts aligned with self.series_list. Pure
+        reads only — does NOT touch any Qt state, so it is safe to run off the
+        main thread.
         """
-        metrics = []
-        for tp, xp in self.series_list:
+        n = len(self.series_list)
+        results = [None] * n
+
+        def work(i):
+            tp, xp = self.series_list[i]
             name = self._series_name(tp)
             loss = read_alignment_loss(self.loss_dir, name)
-
-            ctf = motion = None
-            # Prefer post-alignment tilt-series XML CTF/motion when this series
-            # has been aligned (loss present) or the XML carries ts_ctf results.
             ts_ctf, ts_motion = read_tiltseries_ctf_motion(xp)
             if loss is not None and ts_ctf is not None:
                 ctf, motion = ts_ctf, ts_motion
             else:
-                # pre-alignment: aggregate CTF/motion from per-frame XMLs
                 ctf, motion = self._preali_series_metrics(tp, xp)
-                # fall back to tilt-series XML values if per-frame unavailable
                 if ctf is None:
                     ctf = ts_ctf
                 if motion is None:
                     motion = ts_motion
-            metrics.append({'ctf': ctf, 'motion': motion, 'loss': loss})
+            return i, {'ctf': ctf, 'motion': motion, 'loss': loss}
 
+        workers = min(self.io_workers, n) if n else 1
+        if workers <= 1:
+            for i in range(n):
+                _, results[i] = work(i)
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = [ex.submit(work, i) for i in range(n)]
+                for fut in as_completed(futs):
+                    i, m = fut.result()
+                    results[i] = m
+        return results
+
+    def _start_background_ranking(self):
+        """
+        Launch the ranking metric-gathering on a background thread, so the
+        window (already shown) stays responsive. When it finishes, the results
+        are applied on the main thread via _apply_ranking.
+        """
+        self.statusBar().showMessage(
+            "Ranking datasets in the background\u2026", 0)
+        self._rank_thread = _RankingThread(self)
+        self._rank_thread.finished_metrics.connect(self._apply_ranking)
+        self._rank_thread.start()
+
+    def _apply_ranking(self, metrics):
+        """
+        Apply ranking results (runs on the MAIN/GUI thread via signal). Computes
+        the ranks, reorders the series list so rank 1 is first, and rebuilds the
+        list widget — preserving whichever series is currently selected.
+        """
         ranks, used_loss = compute_series_ranking(metrics)
         self._used_loss_in_rank = used_loss
 
-        # Attach rank + metrics to each series, then sort by rank (1 = best)
+        # Remember the currently-selected series so we can keep it selected
+        # after the reorder.
+        cur_tp = self.series_list[self.series_idx][0] \
+            if 0 <= self.series_idx < len(self.series_list) else None
+
         indexed = list(range(len(self.series_list)))
         rank_of = {i: (ranks[i] if ranks[i] is not None else 10**9)
                    for i in indexed}
@@ -1406,11 +1464,49 @@ class MainWindow(QMainWindow):
         self.series_list = [self.series_list[i] for i in order]
         self.series_rank = [ranks[i] for i in order]
         self.series_metrics = [metrics[i] for i in order]
+        # Remap the cache (keyed by old index) to the new positions.
+        old_cache = self._cache
+        self._cache = {}
+        for new_i, old_i in enumerate(order):
+            if old_i in old_cache:
+                self._cache[new_i] = old_cache[old_i]
+
+        # Find where the previously-selected series went.
+        new_sel = 0
+        if cur_tp is not None:
+            for j, (tp, _) in enumerate(self.series_list):
+                if tp == cur_tp:
+                    new_sel = j
+                    break
+        self.series_idx = new_sel
+
+        self._ranking_done = True
+        self._rebuild_series_list_widget()
 
         n_ranked = sum(1 for r in ranks if r is not None)
         mode = "post-alignment (CTF + motion + loss)" if used_loss \
             else "pre-alignment (CTF + motion)"
-        print(f"  Ranked {n_ranked}/{len(self.series_list)} series \u2014 {mode}")
+        self.statusBar().showMessage(
+            f"Ranked {n_ranked}/{len(self.series_list)} series \u2014 {mode}",
+            5000)
+
+    def _rebuild_series_list_widget(self):
+        """Repopulate the series list widget after a reorder (main thread)."""
+        if not hasattr(self, 'series_list_widget'):
+            return
+        # update the header to reflect the ranking mode now known
+        if hasattr(self, 'series_list_header'):
+            rank_mode = "CTF+motion+loss" if self._used_loss_in_rank \
+                else "CTF+motion"
+            self.series_list_header.setText(
+                f"Tilt Series \u2014 ranked ({rank_mode})")
+        w = self.series_list_widget
+        w.blockSignals(True)
+        w.clear()
+        for i in range(len(self.series_list)):
+            w.addItem(self._format_series_item(i))
+        w.setCurrentRow(self.series_idx)
+        w.blockSignals(False)
 
     def _preali_series_metrics(self, tomostar_path, xml_path):
         """
@@ -1584,14 +1680,21 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(4, 4, 4, 4)
         right_layout.setSpacing(4)
-        rank_mode = "CTF+motion+loss" if getattr(self, '_used_loss_in_rank',
-                                                  False) else "CTF+motion"
-        lbl = QLabel(f"Tilt Series \u2014 ranked ({rank_mode})")
+        # Ranking runs in the background after the window shows; start with a
+        # neutral header and update it when ranking completes.
+        if getattr(self, '_ranking_done', False):
+            rank_mode = "CTF+motion+loss" if getattr(
+                self, '_used_loss_in_rank', False) else "CTF+motion"
+            header_text = f"Tilt Series \u2014 ranked ({rank_mode})"
+        else:
+            header_text = "Tilt Series \u2014 ranking\u2026"
+        lbl = QLabel(header_text)
         lbl.setStyleSheet(
             f"color: {C_TEXT}; font-weight: bold; font-size: 12px;")
         lbl.setAlignment(Qt.AlignCenter)
         lbl.setWordWrap(True)
         right_layout.addWidget(lbl)
+        self.series_list_header = lbl
         self.series_list_widget = QListWidget()
         self.series_list_widget.setStyleSheet(f"""
             QListWidget {{
@@ -1710,6 +1813,16 @@ class MainWindow(QMainWindow):
             self._bulk_buttons.append((b, category))
             bulk_row.addWidget(b)
         self._restyle_bulk_buttons()
+
+        # Exclude every tilt in the current dataset (reject the whole dataset).
+        btn_all_frames = QPushButton("Exclude ALL frames")
+        btn_all_frames.setStyleSheet(
+            f"QPushButton {{ background: {C_RED}; color: white; "
+            f"font-weight: bold; border: none; border-radius: 4px; "
+            f"padding: 6px 10px; }}"
+            f"QPushButton:hover {{ background: #b91c1c; }}")
+        btn_all_frames.clicked.connect(self._exclude_all_frames)
+        bulk_row.addWidget(btn_all_frames)
 
         # Colour-picker button
         btn_colours = _btn("Colours\u2026", self._open_color_picker)
@@ -1916,6 +2029,43 @@ class MainWindow(QMainWindow):
         self._refresh()
         self.statusBar().showMessage(
             f"Excluded {count} {category.replace('_', ' ')} tilt(s)", 3000)
+        self.setFocus()
+
+    def _exclude_all_frames(self):
+        """
+        Exclude every tilt in the current dataset, effectively rejecting the
+        whole dataset. Asks for confirmation first, since it is a sweeping
+        action. Nothing is written to disk until Save.
+        """
+        s = self._s()
+        name = self._series_name(self.series_list[self.series_idx][0])
+        already = all(s['excluded'][i] for i in range(s['n'])) if s['n'] else False
+        if already:
+            self.statusBar().showMessage(
+                "All tilts in this dataset are already excluded", 3000)
+            self.setFocus()
+            return
+        reply = QMessageBox.question(
+            self, "Exclude entire dataset",
+            f"Exclude ALL {s['n']} tilts in '{name}'?\n\n"
+            f"This rejects the whole dataset by marking every tilt as excluded. "
+            f"You can still re-include tilts afterwards, and nothing is written "
+            f"to disk until you Save.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            self.setFocus()
+            return
+        count = 0
+        for i in range(s['n']):
+            if not s['excluded'][i]:
+                s['excluded'][i] = True
+                count += 1
+        if count:
+            _play_exclude_sound()
+        self._refresh()
+        self.statusBar().showMessage(
+            f"Excluded all {s['n']} tilts in '{name}' \u2014 dataset rejected "
+            f"(not saved until you Save)", 5000)
         self.setFocus()
 
     def _categorise_in(self, s, i):
@@ -2164,7 +2314,7 @@ def _show_splash(app, logo_path=None, seconds=5):
 
 def run_batch(tomostar_dir, frame_dir, xml_dir=None,
               sigma=3.0, contrast_lo=2, contrast_hi=98, loss_dir=None,
-              logo=None, splash_seconds=5):
+              logo=None, splash_seconds=5, io_workers=16):
     pairs = find_tilt_series(tomostar_dir, frame_dir, xml_dir)
     if not pairs:
         print(f"[ERROR] No .tomostar files in {tomostar_dir}"); sys.exit(1)
@@ -2172,7 +2322,7 @@ def run_batch(tomostar_dir, frame_dir, xml_dir=None,
     app = QApplication.instance() or QApplication(sys.argv)
     splash = _show_splash(app, logo, splash_seconds) if splash_seconds else None
     win = MainWindow(pairs, frame_dir, sigma, contrast_lo, contrast_hi,
-                     loss_dir=loss_dir, xml_dir=xml_dir)
+                     loss_dir=loss_dir, xml_dir=xml_dir, io_workers=io_workers)
     win.show()
     if splash is not None:
         splash.finish(win)
@@ -2213,6 +2363,11 @@ def parse_args():
                         "logo.png next to the script if present.")
     p.add_argument('--no_splash',   action='store_true',
                    help="Skip the startup splash screen.")
+    p.add_argument('--io_workers',  type=int, default=16, metavar='N',
+                   help="Number of parallel workers for reading ranking "
+                        "metadata at startup (default 16). Higher can be faster "
+                        "on high-latency network storage; 1 = serial. Tune if "
+                        "startup is slow or the storage prefers fewer requests.")
     return p.parse_args()
 
 
@@ -2223,7 +2378,8 @@ def main():
         run_batch(args.tomostar_dir, args.frame_dir, args.xml_dir,
                   args.sigma, args.contrast_lo, args.contrast_hi,
                   loss_dir=args.loss_dir,
-                  logo=args.logo, splash_seconds=splash_seconds)
+                  logo=args.logo, splash_seconds=splash_seconds,
+                  io_workers=args.io_workers)
     else:
         ts_xml = args.xml
         if not ts_xml:
@@ -2235,7 +2391,8 @@ def main():
         win = MainWindow([(args.tomostar, ts_xml)],
                          args.frame_dir, args.sigma,
                          args.contrast_lo, args.contrast_hi,
-                         loss_dir=args.loss_dir, xml_dir=args.xml_dir)
+                         loss_dir=args.loss_dir, xml_dir=args.xml_dir,
+                         io_workers=args.io_workers)
         win.show()
         if splash is not None:
             splash.finish(win)

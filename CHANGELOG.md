@@ -5,6 +5,31 @@ are documented here.
 
 ---
 
+## [2.4.0] - 2026-07-13
+
+### Changed
+- **Much faster startup on large / network-stored datasets.** The dataset
+  ranking metadata is now read in parallel (a thread pool), and the ranking runs
+  in the background *after* the window opens rather than blocking it. The window
+  now appears in ~1-2 seconds even for many tomograms; the list then re-sorts
+  into ranked order a moment later once the (parallelised) metric reads finish.
+  Previously, opening ~100+ tomograms could take 1-2 minutes because thousands
+  of per-frame XMLs were read serially before the window showed. The currently
+  selected series is preserved when the list re-sorts.
+
+### Added
+- **"Exclude ALL frames" button** rejects the entire current dataset in one
+  click, marking every tilt as excluded (after a confirmation prompt). It sits
+  in the bulk-exclude row next to the category buttons. As with all exclusions,
+  nothing is written until you Save, and tilts can be re-included afterwards.
+- **New `--io_workers N` option** (default 16) tunes the number of parallel
+  metadata-reading workers used at startup. Because the work is I/O-bound
+  (waiting on the filesystem), the useful value is typically higher than the
+  CPU-core count; higher can help on high-latency network storage, and `1`
+  restores fully serial reads.
+
+---
+
 ## [2.3.0] - 2026-07-06
 
 ### Changed
