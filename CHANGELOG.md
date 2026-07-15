@@ -18,6 +18,13 @@ are documented here.
   selected series is preserved when the list re-sorts.
 
 ### Added
+- **Adjustable CTF category thresholds.** The purple ("CTF > X") and amber
+  ("CTF X-Y") boundaries are no longer fixed at 10 and 8 A. Set them at launch
+  with `--ctf_amber` (good/amber boundary, default 8) and `--ctf_purple`
+  (amber/purple boundary, default 10), or adjust them live in the renamed
+  "Categories..." dialog (was "Colours..."), where two spin boxes recolour the
+  overview bar and update the bulk-exclude button labels instantly. The amber
+  boundary is always kept below the purple boundary.
 - **"Exclude ALL frames" button** rejects the entire current dataset in one
   click, marking every tilt as excluded (after a confirmation prompt). It sits
   in the bulk-exclude row next to the category buttons. As with all exclusions,

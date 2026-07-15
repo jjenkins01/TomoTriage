@@ -219,6 +219,8 @@ tomotriage \
 | `--logo IMG` | Path to a splash-screen logo image (defaults to `logo.png` next to the script) |
 | `--no_splash` | Skip the startup splash screen |
 | `--io_workers N` | Number of parallel workers for reading ranking metadata at startup (default: 16). Higher can be faster on high-latency network storage; `1` = serial. |
+| `--ctf_amber A` | CTF resolution (Å) good/amber boundary — tilts worse than this become amber (default: 8.0). Also adjustable live in the Categories… dialog. |
+| `--ctf_purple A` | CTF resolution (Å) amber/purple boundary — tilts worse than this become purple (default: 10.0). Must exceed `--ctf_amber`. |
 
 ---
 

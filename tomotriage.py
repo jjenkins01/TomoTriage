@@ -71,7 +71,7 @@ import mrcfile
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QListWidget,
     QPushButton, QCheckBox, QComboBox, QHBoxLayout, QVBoxLayout,
-    QSizePolicy, QSplitter, QStatusBar,
+    QSizePolicy, QSplitter, QStatusBar, QDoubleSpinBox,
     QDialog, QGridLayout, QColorDialog, QMessageBox, QSplashScreen
 )
 from PyQt5.QtGui import (
@@ -1008,7 +1008,8 @@ class OverviewCanvas(FigureCanvasQTAgg):
             self.tilt_clicked.emit(real)
 
     def update_overview(self, excluded, flagged, current_idx,
-                        ctf_values=None, order=None, angles=None):
+                        ctf_values=None, order=None, angles=None,
+                        ctf_mod=8.0, ctf_bad=10.0):
         """
         order : list mapping display position -> real tilt index. When given
                 (angle-sorted), the bar is drawn in that order so the centre
@@ -1035,9 +1036,9 @@ class OverviewCanvas(FigureCanvasQTAgg):
                 colours.append(C['flagged'])
             elif ctf_values and real < len(ctf_values) and ctf_values[real]:
                 ctf = ctf_values[real]
-                if   ctf > 10: colours.append(C['ctf_bad'])
-                elif ctf > 8:  colours.append(C['ctf_mod'])
-                else:          colours.append(C['good'])
+                if   ctf > ctf_bad: colours.append(C['ctf_bad'])
+                elif ctf > ctf_mod: colours.append(C['ctf_mod'])
+                else:               colours.append(C['good'])
             else:
                 colours.append(C['good'])
 
@@ -1217,16 +1218,19 @@ def _btn(text, callback):
 
 class ColorPickerDialog(QDialog):
     """
-    Small dialog to recolour the overview-bar categories. Changes apply live
-    via the on_change callback. Session-only — not persisted between launches.
+    Dialog to customise the overview-bar categories: their colours, and the
+    CTF resolution thresholds that define the purple/amber/good bands. Changes
+    apply live via the callbacks. Session-only — not persisted between launches.
     """
 
-    def __init__(self, colors, on_change, parent=None):
+    def __init__(self, colors, on_change, parent=None,
+                 ctf_mod=8.0, ctf_bad=10.0, on_threshold_change=None):
         super().__init__(parent)
         self.colors = colors
         self.on_change = on_change
+        self.on_threshold_change = on_threshold_change
         self._swatches = {}
-        self.setWindowTitle("Category Colours")
+        self.setWindowTitle("Categories")
         self.setStyleSheet(f"background: {C_BG}; color: {C_TEXT};")
 
         layout = QGridLayout(self)
@@ -1251,11 +1255,70 @@ class ColorPickerDialog(QDialog):
             self._swatches[key] = sw
             layout.addWidget(sw, row, 1)
 
+        # ── CTF threshold controls ──────────────────────────────────────────
+        r = len(CategoryColors.ORDER) + 1
+        thr_title = QLabel("CTF resolution thresholds (\u00c5)")
+        thr_title.setStyleSheet(f"color: {C_TEXT}; font-weight: bold; "
+                                f"font-size: 12px; padding-top: 6px;")
+        layout.addWidget(thr_title, r, 0, 1, 2)
+
+        # Amber threshold: good <= this < amber
+        layout.addWidget(QLabel("Good / Amber boundary"), r + 1, 0)
+        self.spin_mod = QDoubleSpinBox()
+        self.spin_mod.setDecimals(1)
+        self.spin_mod.setSingleStep(0.5)
+        self.spin_mod.setRange(0.1, 100.0)
+        self.spin_mod.setValue(float(ctf_mod))
+        self.spin_mod.setStyleSheet(
+            f"background: {C_PANEL}; color: {C_TEXT}; padding: 2px;")
+        layout.addWidget(self.spin_mod, r + 1, 1)
+
+        # Purple threshold: amber <= this < purple
+        layout.addWidget(QLabel("Amber / Purple boundary"), r + 2, 0)
+        self.spin_bad = QDoubleSpinBox()
+        self.spin_bad.setDecimals(1)
+        self.spin_bad.setSingleStep(0.5)
+        self.spin_bad.setRange(0.1, 100.0)
+        self.spin_bad.setValue(float(ctf_bad))
+        self.spin_bad.setStyleSheet(
+            f"background: {C_PANEL}; color: {C_TEXT}; padding: 2px;")
+        layout.addWidget(self.spin_bad, r + 2, 1)
+
+        hint = QLabel("Good \u2264 amber boundary < Amber \u2264 purple "
+                      "boundary < Purple")
+        hint.setStyleSheet(f"color: {C_DIM}; font-size: 10px;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint, r + 3, 0, 1, 2)
+
+        self.spin_mod.valueChanged.connect(self._thresholds_edited)
+        self.spin_bad.valueChanged.connect(self._thresholds_edited)
+
         # Reset + Close
         btn_reset = _btn("Reset to defaults", self._reset)
         btn_close = _btn("Close", self.accept)
-        layout.addWidget(btn_reset, len(CategoryColors.ORDER) + 1, 0)
-        layout.addWidget(btn_close, len(CategoryColors.ORDER) + 1, 1)
+        layout.addWidget(btn_reset, r + 4, 0)
+        layout.addWidget(btn_close, r + 4, 1)
+
+    def _thresholds_edited(self, *_):
+        """Keep the two thresholds ordered, then emit the change live."""
+        mod = self.spin_mod.value()
+        bad = self.spin_bad.value()
+        # Enforce mod < bad by nudging the other spin box if they cross.
+        if mod >= bad:
+            sender = self.sender()
+            if sender is self.spin_mod:
+                bad = mod + self.spin_bad.singleStep()
+                self.spin_bad.blockSignals(True)
+                self.spin_bad.setValue(bad)
+                self.spin_bad.blockSignals(False)
+            else:
+                mod = max(self.spin_mod.minimum(),
+                          bad - self.spin_mod.singleStep())
+                self.spin_mod.blockSignals(True)
+                self.spin_mod.setValue(mod)
+                self.spin_mod.blockSignals(False)
+        if self.on_threshold_change:
+            self.on_threshold_change(mod, bad)
 
     def _style_swatch(self, btn, hexcolor):
         btn.setStyleSheet(
@@ -1277,6 +1340,12 @@ class ColorPickerDialog(QDialog):
         for key in CategoryColors.ORDER:
             self.colors.set(key, defaults[key])
             self._style_swatch(self._swatches[key], self.colors[key])
+        # reset thresholds to defaults too
+        self.spin_mod.blockSignals(True); self.spin_bad.blockSignals(True)
+        self.spin_mod.setValue(8.0); self.spin_bad.setValue(10.0)
+        self.spin_mod.blockSignals(False); self.spin_bad.blockSignals(False)
+        if self.on_threshold_change:
+            self.on_threshold_change(8.0, 10.0)
         self.on_change()
 
 
@@ -1310,12 +1379,16 @@ class MainWindow(QMainWindow):
 
     def __init__(self, series_list, frame_dir=None,
                  sigma=3.0, contrast_lo=2, contrast_hi=98,
-                 loss_dir=None, xml_dir=None, io_workers=16):
+                 loss_dir=None, xml_dir=None, io_workers=16,
+                 ctf_mod=8.0, ctf_bad=10.0):
         super().__init__()
         self.series_list = series_list
         self.loss_dir    = loss_dir
         self.xml_dir     = xml_dir
         self.io_workers  = max(1, int(io_workers))
+        # CTF category thresholds (A): good <= ctf_mod < amber <= ctf_bad < purple
+        self.ctf_mod = float(ctf_mod)
+        self.ctf_bad = float(ctf_bad)
         # Normalise frame_dir: if the user pointed it at the average/ subdir,
         # step back to its parent so average/, powerspectrum/ and the per-frame
         # XMLs are all found consistently.
@@ -1799,15 +1872,11 @@ class MainWindow(QMainWindow):
             f"padding: 6px 4px;")
         bulk_row.addWidget(bulk_lbl)
 
-        # (label, category) — colour comes from the live theme
-        bulk_specs = [
-            ('Purple (CTF > 10 \u00c5)', 'ctf_bad'),
-            ('Amber (CTF 8\u201310 \u00c5)', 'ctf_mod'),
-            ('Orange (flagged)',          'flagged'),
-        ]
+        # (category -> button); labels reflect the live CTF thresholds
+        bulk_categories = ['ctf_bad', 'ctf_mod', 'flagged']
         self._bulk_buttons = []   # (button, category) for live recolour
-        for label, category in bulk_specs:
-            b = QPushButton(label)
+        for category in bulk_categories:
+            b = QPushButton(self._ctf_button_label(category))
             b.clicked.connect(
                 lambda _checked, c=category: self._exclude_category(c))
             self._bulk_buttons.append((b, category))
@@ -1824,8 +1893,8 @@ class MainWindow(QMainWindow):
         btn_all_frames.clicked.connect(self._exclude_all_frames)
         bulk_row.addWidget(btn_all_frames)
 
-        # Colour-picker button
-        btn_colours = _btn("Colours\u2026", self._open_color_picker)
+        # Category settings (colours + CTF thresholds)
+        btn_colours = _btn("Categories\u2026", self._open_color_picker)
         bulk_row.addWidget(btn_colours)
 
         bulk_row.addStretch(1)
@@ -1841,8 +1910,8 @@ class MainWindow(QMainWindow):
             f"padding: 6px 4px;")
         allbulk_row.addWidget(allbulk_lbl)
         self._allbulk_buttons = []
-        for label, category in bulk_specs:
-            b = QPushButton(label)
+        for category in bulk_categories:
+            b = QPushButton(self._ctf_button_label(category))
             b.clicked.connect(
                 lambda _checked, c=category: self._exclude_category_all(c))
             self._allbulk_buttons.append((b, category))
@@ -1911,7 +1980,9 @@ class MainWindow(QMainWindow):
         self.overview.update_overview(s['excluded'], s['flagged'],
                                       ti, ctf_vals,
                                       order=s['angle_order'],
-                                      angles=s['angles'])
+                                      angles=s['angles'],
+                                      ctf_mod=self.ctf_mod,
+                                      ctf_bad=self.ctf_bad)
 
         # Right-hand plots: CTF fit (current tilt) + res/defocus/motion scatter
         per_tilt_colours = [self.colors[self._categorise(i)]
@@ -2012,8 +2083,8 @@ class MainWindow(QMainWindow):
             return 'flagged'
         ctf = s['frame_meta'][i].get('ctf_res') if i < len(s['frame_meta']) else None
         if ctf:
-            if ctf > 10: return 'ctf_bad'
-            if ctf > 8:  return 'ctf_mod'
+            if ctf > self.ctf_bad: return 'ctf_bad'
+            if ctf > self.ctf_mod: return 'ctf_mod'
         return 'good'
 
     def _exclude_category(self, category):
@@ -2077,8 +2148,8 @@ class MainWindow(QMainWindow):
         ctf = s['frame_meta'][i].get('ctf_res') if i < len(s['frame_meta']) \
             else None
         if ctf:
-            if ctf > 10: return 'ctf_bad'
-            if ctf > 8:  return 'ctf_mod'
+            if ctf > self.ctf_bad: return 'ctf_bad'
+            if ctf > self.ctf_mod: return 'ctf_mod'
         return 'good'
 
     def _exclude_category_all(self, category):
@@ -2167,13 +2238,49 @@ class MainWindow(QMainWindow):
                 QPushButton:pressed {{ background: {C_ACCENT}; color: {C_TEXT}; }}
             """)
 
+    def _ctf_button_label(self, category):
+        """Button label for a category, reflecting the live CTF thresholds."""
+        mod = self._fmt_thresh(self.ctf_mod)
+        bad = self._fmt_thresh(self.ctf_bad)
+        if category == 'ctf_bad':
+            return f"Purple (CTF > {bad} \u00c5)"
+        if category == 'ctf_mod':
+            return f"Amber (CTF {mod}\u2013{bad} \u00c5)"
+        if category == 'flagged':
+            return "Orange (flagged)"
+        return category
+
+    @staticmethod
+    def _fmt_thresh(v):
+        """Format a threshold without a trailing .0 (8.0 -> '8', 8.5 -> '8.5')."""
+        return f"{v:g}"
+
+    def _relabel_bulk_buttons(self):
+        """Refresh bulk-button text after a threshold change."""
+        for b, category in list(getattr(self, '_bulk_buttons', [])) + \
+                list(getattr(self, '_allbulk_buttons', [])):
+            b.setText(self._ctf_button_label(category))
+
     def _on_colors_changed(self):
         """Called live from the colour picker — repaint everything."""
         self._restyle_bulk_buttons()
         self._refresh()
 
+    def _on_thresholds_changed(self, ctf_mod, ctf_bad):
+        """
+        Called live from the Categories dialog when a CTF threshold spin box
+        changes. Updates the thresholds, relabels the buttons, and repaints the
+        overview bar so recolouring is immediate.
+        """
+        self.ctf_mod = float(ctf_mod)
+        self.ctf_bad = float(ctf_bad)
+        self._relabel_bulk_buttons()
+        self._refresh()
+
     def _open_color_picker(self):
-        dlg = ColorPickerDialog(self.colors, self._on_colors_changed, self)
+        dlg = ColorPickerDialog(self.colors, self._on_colors_changed,
+                                self, ctf_mod=self.ctf_mod, ctf_bad=self.ctf_bad,
+                                on_threshold_change=self._on_thresholds_changed)
         dlg.exec_()
         self.setFocus()
 
@@ -2314,7 +2421,8 @@ def _show_splash(app, logo_path=None, seconds=5):
 
 def run_batch(tomostar_dir, frame_dir, xml_dir=None,
               sigma=3.0, contrast_lo=2, contrast_hi=98, loss_dir=None,
-              logo=None, splash_seconds=5, io_workers=16):
+              logo=None, splash_seconds=5, io_workers=16,
+              ctf_mod=8.0, ctf_bad=10.0):
     pairs = find_tilt_series(tomostar_dir, frame_dir, xml_dir)
     if not pairs:
         print(f"[ERROR] No .tomostar files in {tomostar_dir}"); sys.exit(1)
@@ -2322,7 +2430,8 @@ def run_batch(tomostar_dir, frame_dir, xml_dir=None,
     app = QApplication.instance() or QApplication(sys.argv)
     splash = _show_splash(app, logo, splash_seconds) if splash_seconds else None
     win = MainWindow(pairs, frame_dir, sigma, contrast_lo, contrast_hi,
-                     loss_dir=loss_dir, xml_dir=xml_dir, io_workers=io_workers)
+                     loss_dir=loss_dir, xml_dir=xml_dir, io_workers=io_workers,
+                     ctf_mod=ctf_mod, ctf_bad=ctf_bad)
     win.show()
     if splash is not None:
         splash.finish(win)
@@ -2368,18 +2477,31 @@ def parse_args():
                         "metadata at startup (default 16). Higher can be faster "
                         "on high-latency network storage; 1 = serial. Tune if "
                         "startup is slow or the storage prefers fewer requests.")
+    p.add_argument('--ctf_amber',   type=float, default=8.0, metavar='A',
+                   help="CTF resolution (\u00c5) good/amber boundary: tilts with "
+                        "CTF worse than this become amber (default 8.0).")
+    p.add_argument('--ctf_purple',  type=float, default=10.0, metavar='A',
+                   help="CTF resolution (\u00c5) amber/purple boundary: tilts with "
+                        "CTF worse than this become purple (default 10.0). Must "
+                        "be greater than --ctf_amber.")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
     splash_seconds = 0 if args.no_splash else 5
+    # Validate CTF thresholds: amber boundary must be below purple boundary.
+    if args.ctf_amber >= args.ctf_purple:
+        print(f"[ERROR] --ctf_amber ({args.ctf_amber}) must be less than "
+              f"--ctf_purple ({args.ctf_purple})")
+        sys.exit(1)
     if args.tomostar_dir:
         run_batch(args.tomostar_dir, args.frame_dir, args.xml_dir,
                   args.sigma, args.contrast_lo, args.contrast_hi,
                   loss_dir=args.loss_dir,
                   logo=args.logo, splash_seconds=splash_seconds,
-                  io_workers=args.io_workers)
+                  io_workers=args.io_workers,
+                  ctf_mod=args.ctf_amber, ctf_bad=args.ctf_purple)
     else:
         ts_xml = args.xml
         if not ts_xml:
@@ -2392,7 +2514,8 @@ def main():
                          args.frame_dir, args.sigma,
                          args.contrast_lo, args.contrast_hi,
                          loss_dir=args.loss_dir, xml_dir=args.xml_dir,
-                         io_workers=args.io_workers)
+                         io_workers=args.io_workers,
+                         ctf_mod=args.ctf_amber, ctf_bad=args.ctf_purple)
         win.show()
         if splash is not None:
             splash.finish(win)
