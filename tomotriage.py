@@ -67,6 +67,7 @@ os.environ.setdefault('SESSION_MANAGER', '')
 
 import numpy as np
 import mrcfile
+import math
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QListWidget,
@@ -78,7 +79,7 @@ from PyQt5.QtGui import (
     QImage, QPixmap, QColor, QPainter, QPen, QPainterPath,
     QFont, QPalette
 )
-from PyQt5.QtCore import Qt, QSize, QPointF, pyqtSignal, QTimer, QThread
+from PyQt5.QtCore import Qt, QSize, QPointF, QRectF, pyqtSignal, QTimer, QThread
 
 import matplotlib
 matplotlib.use('Agg')
@@ -784,6 +785,7 @@ class ImageLabel(QLabel):
         super().__init__(parent)
         self._raw_pixmap   = None
         self._excluded     = False
+        self._series_excluded = False
         self._candidate    = False
         self._motion_data  = None
         self._show_motion  = True
@@ -808,8 +810,10 @@ class ImageLabel(QLabel):
     # ── Public API ─────────────────────────────────────────────────────────
 
     def set_array(self, array, contrast_lo=2, contrast_hi=98,
-                  excluded=False, candidate=False, motion_data=None):
+                  excluded=False, candidate=False, motion_data=None,
+                  series_excluded=False):
         self._excluded    = excluded
+        self._series_excluded = series_excluded
         self._candidate   = candidate
         self._motion_data = motion_data
         if array is None:
@@ -861,21 +865,71 @@ class ImageLabel(QLabel):
             p.setOpacity(0.28)
             p.fillRect(result.rect(), QColor(220, 50, 50))
             p.setOpacity(1.0)
+            p.setRenderHint(QPainter.Antialiasing, True)
+
+            # TomoTriage tilt-series mark (no wordmark), centred, with a label
+            # beneath it. "Series excluded" when the whole series is rejected,
+            # otherwise "Frame excluded".
+            cx = W / 2.0
+            r = max(14.0, H * 0.16)
+            gap = H * 0.05
+            label = ("Series excluded" if self._series_excluded
+                     else "Frame excluded")
             font = QFont()
-            font.setPointSize(max(10, H // 18))
+            font.setPointSize(max(10, H // 20))
             font.setBold(True)
             p.setFont(font)
-            rect = result.rect()
-            # Shadow
+            text_h = p.fontMetrics().height()
+            # Vertically centre the whole composition (mark + gap + label).
+            total_h = 2 * r + gap + text_h
+            top = (H - total_h) / 2.0
+            burst_cy = top + r
+            self._draw_exclusion_mark(p, cx, burst_cy, r)
+
+            trect = QRectF(0, burst_cy + r + gap, W, text_h + 4)
             p.setPen(QColor(0, 0, 0))
-            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
-                p.drawText(rect.translated(dx, dy),
-                           Qt.AlignCenter, "Bad frame\n— excluded —")
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                p.drawText(trect.translated(dx, dy),
+                           Qt.AlignHCenter | Qt.AlignTop, label)
             p.setPen(QColor(255, 255, 255))
-            p.drawText(rect, Qt.AlignCenter, "Bad frame\n— excluded —")
+            p.drawText(trect, Qt.AlignHCenter | Qt.AlignTop, label)
 
         p.end()
         self.setPixmap(result)
+
+    def _draw_exclusion_mark(self, p, cx, cy, r):
+        """
+        Draw the TomoTriage tilt-series burst (the logo mark only, without the
+        wordmark) centred at (cx, cy) with outer radius r. Horizontal
+        dose-symmetric tilt series: equal-length diameters through the centre at
+        a constant angular step from -60 to +60 deg of horizontal, coloured
+        green (low tilt) -> amber -> purple (extremes), with the horizontal
+        missing wedge left empty. Green is drawn last so the central band stays
+        clean; a white node covers the centre.
+        """
+        cols = {'g': QColor('#4ade80'), 'a': QColor('#fbbf24'),
+                'p': QColor('#a855f7')}
+
+        def cat(t):
+            a = abs(t)
+            return 'g' if a < 20 else ('a' if a < 40 else 'p')
+
+        tilts = list(range(-60, 61, 4))
+        lw = max(1.5, r * 0.043)
+        for grp in ('p', 'a', 'g'):          # green last (on top)
+            pen = QPen(cols[grp]); pen.setWidthF(lw); pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            for t in tilts:
+                if cat(t) != grp:
+                    continue
+                a = math.radians(t); ux = math.cos(a); uy = -math.sin(a)
+                p.drawLine(QPointF(cx + r * ux, cy + r * uy),
+                           QPointF(cx - r * ux, cy - r * uy))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor('#ffffff'))
+        dot = max(2.0, r * 0.147)
+        p.drawEllipse(QPointF(cx, cy), dot, dot)
+        p.setBrush(Qt.NoBrush)
 
     def _draw_motion_overlay(self, painter, W, H):
         """
@@ -1521,6 +1575,12 @@ class MainWindow(QMainWindow):
         the ranks, reorders the series list so rank 1 is first, and rebuilds the
         list widget — preserving whichever series is currently selected.
         """
+        # If a dataset was removed (e.g. "Exclude dataset") while the background
+        # ranking was still running, the metrics no longer line up with the
+        # current series list. Ignore the stale result rather than reorder wrongly.
+        if len(metrics) != len(self.series_list):
+            self._ranking_done = True
+            return
         ranks, used_loss = compute_series_ranking(metrics)
         self._used_loss_in_rank = used_loss
 
@@ -1893,6 +1953,23 @@ class MainWindow(QMainWindow):
         btn_all_frames.clicked.connect(self._exclude_all_frames)
         bulk_row.addWidget(btn_all_frames)
 
+        # Reject the whole dataset by MOVING its XML out of the processing dir
+        # into excluded_datasets/ (so WarpTools / miss-alignment skip it). Styled
+        # as an outline to distinguish "remove from processing" from the solid
+        # "Exclude ALL frames" (which only marks tilts).
+        btn_excl_ds = QPushButton("Exclude dataset")
+        btn_excl_ds.setToolTip(
+            "Move this dataset's tilt-series XML into an excluded_datasets/ "
+            "subdirectory so WarpTools and miss-alignment no longer see it "
+            "(a timestamped backup is kept).")
+        btn_excl_ds.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {C_RED}; "
+            f"font-weight: bold; border: 2px solid {C_RED}; border-radius: 4px; "
+            f"padding: 5px 10px; }}"
+            f"QPushButton:hover {{ background: {C_RED}; color: white; }}")
+        btn_excl_ds.clicked.connect(self._exclude_dataset)
+        bulk_row.addWidget(btn_excl_ds)
+
         # Category settings (colours + CTF thresholds)
         btn_colours = _btn("Categories\u2026", self._open_color_picker)
         bulk_row.addWidget(btn_colours)
@@ -1948,6 +2025,8 @@ class MainWindow(QMainWindow):
         angle = s['angles'][ti] if ti < len(s['angles']) else ti
         excl  = s['excluded'][ti]
         cand  = s['flagged'][ti]
+        # Whole series rejected -> label the overlay "Series excluded"
+        series_excl = bool(s['n']) and all(s['excluded'][:s['n']])
         meta  = s['frame_meta'][ti]  if ti < len(s['frame_meta'])  else {}
         mdata = self._get_motion(ti)
 
@@ -1955,7 +2034,8 @@ class MainWindow(QMainWindow):
         # missing — set_array handles None by clearing the panel)
         self.img_tilt.set_array(img, self.clo, self.chi,
                                  excluded=excl, candidate=cand,
-                                 motion_data=mdata)
+                                 motion_data=mdata,
+                                 series_excluded=series_excl)
 
         # Power spectrum — crop to the signal band. The .mrc is 512x256
         # (half-Fourier); keep the central 128-row band so just the signal is
@@ -2138,6 +2218,117 @@ class MainWindow(QMainWindow):
             f"Excluded all {s['n']} tilts in '{name}' \u2014 dataset rejected "
             f"(not saved until you Save)", 5000)
         self.setFocus()
+
+    def _exclude_dataset(self):
+        """
+        Reject the current dataset entirely by MOVING its tilt-series XML out of
+        the processing directory into an 'excluded_datasets/' subdirectory. This
+        removes it from WarpTools / miss-alignment processing (both glob *.xml in
+        the processing directory, not in subdirectories), which avoids feeding a
+        fully-excluded (empty) tilt series to alignment. A timestamped backup is
+        written to xml_original_backups/ first, and the dataset is then removed
+        from the list. The .tomostar and raw data are left untouched.
+        """
+        if not self.series_list:
+            return
+        k = self.series_idx
+        tomostar_path, xml_path = self.series_list[k]
+        name = self._series_name(tomostar_path)
+
+        if not xml_path or not os.path.isfile(xml_path):
+            QMessageBox.warning(
+                self, "Cannot exclude dataset",
+                f"No tilt-series XML found on disk for '{name}', so there is "
+                f"nothing to move.")
+            self.setFocus()
+            return
+
+        reply = QMessageBox.question(
+            self, "Exclude dataset",
+            f"Remove the dataset '{name}' from processing?\n\n"
+            f"Its tilt-series XML will be MOVED into an 'excluded_datasets/' "
+            f"subdirectory (a timestamped backup is kept in "
+            f"xml_original_backups/), so WarpTools and miss-alignment will no "
+            f"longer see it. It will also be removed from this list.\n\n"
+            f"The .tomostar and raw data are left untouched \u2014 move the XML "
+            f"back out of excluded_datasets/ to restore it.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            self.setFocus()
+            return
+
+        try:
+            xml_dir = os.path.dirname(os.path.abspath(xml_path))
+            stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            # 1) backup (same convention as Save)
+            backup_dir = os.path.join(xml_dir, 'xml_original_backups')
+            os.makedirs(backup_dir, exist_ok=True)
+            shutil.copy2(
+                xml_path,
+                os.path.join(backup_dir,
+                             os.path.basename(xml_path) + f'.backup_{stamp}'))
+            # 2) move into excluded_datasets/
+            excl_dir = os.path.join(xml_dir, 'excluded_datasets')
+            os.makedirs(excl_dir, exist_ok=True)
+            dest = os.path.join(excl_dir, os.path.basename(xml_path))
+            if os.path.exists(dest):     # never clobber a previous exclusion
+                dest = os.path.join(
+                    excl_dir, os.path.basename(xml_path) + f'.{stamp}')
+            shutil.move(xml_path, dest)
+            print(f"  Excluded dataset '{name}': moved XML -> {dest}")
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Exclude dataset failed",
+                f"Could not move the XML for '{name}':\n{e}")
+            self.setFocus()
+            return
+
+        self._remove_series_at(k)
+        self.statusBar().showMessage(
+            f"Excluded dataset '{name}' \u2014 XML moved to excluded_datasets/",
+            5000)
+        self.setFocus()
+
+    def _remove_series_at(self, k):
+        """
+        Remove series index k from the in-memory model and the list widget,
+        remapping the (index-keyed) image cache and choosing a sensible new
+        current dataset. Used after a dataset's XML is moved out of processing.
+        """
+        n = len(self.series_list)
+        if not (0 <= k < n):
+            return
+        del self.series_list[k]
+        if k < len(self.series_rank):
+            del self.series_rank[k]
+        if k < len(self.series_metrics):
+            del self.series_metrics[k]
+        # Remap cache: entries above k shift down by one; k itself is dropped.
+        new_cache = {}
+        for old_i, val in self._cache.items():
+            if old_i < k:
+                new_cache[old_i] = val
+            elif old_i > k:
+                new_cache[old_i - 1] = val
+        self._cache = new_cache
+
+        if not self.series_list:
+            self.series_idx = 0
+            if hasattr(self, 'series_list_widget'):
+                self.series_list_widget.blockSignals(True)
+                self.series_list_widget.clear()
+                self.series_list_widget.blockSignals(False)
+            QMessageBox.information(
+                self, "No datasets left",
+                "Every dataset has been excluded from this session.")
+            return
+
+        # Pick the next dataset (or the previous one if k was last).
+        self.series_idx = min(k, len(self.series_list) - 1)
+        self.tilt_idx = 0
+        self._load_series(self.series_idx)
+        self._rebuild_series_list_widget()
+        self._refresh()
 
     def _categorise_in(self, s, i):
         """Category of tilt i within an arbitrary loaded series dict s."""

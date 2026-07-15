@@ -5,6 +5,30 @@ are documented here.
 
 ---
 
+## [2.5.0] - 2026-07-15
+
+### Changed
+- **Exclusion overlay redesigned.** When a tilt is excluded, the tinted overlay
+  now shows the TomoTriage tilt-series mark (the burst only, without the
+  wordmark) in the centre of the image, with a white label beneath it:
+  **"Frame excluded"** for a single tilt, or **"Series excluded"** when every
+  tilt in the series is excluded. This replaces the old "Bad frame — excluded"
+  text. The mark is drawn directly and scales with the panel.
+
+### Added
+- **"Exclude dataset" button.** Removes a rejected dataset from processing
+  entirely by moving its tilt-series XML into an `excluded_datasets/`
+  subdirectory (a timestamped backup is kept in `xml_original_backups/`), then
+  removing it from the list. Because WarpTools and miss-alignment glob `*.xml`
+  in the processing directory and not its subdirectories, the dataset is then
+  skipped by downstream steps — avoiding the miss-alignment crash that a
+  fully-excluded (empty) tilt series otherwise causes. The `.tomostar` and raw
+  data are left untouched; move the XML back to restore it. This is distinct
+  from "Exclude ALL frames" (which only marks tilts and keeps the file in
+  place): use "Exclude dataset" to take a whole dataset out of processing.
+
+---
+
 ## [2.4.0] - 2026-07-13
 
 ### Changed
