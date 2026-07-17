@@ -11,11 +11,12 @@ An interactive quality control tool for tilt series data processed with [WarpToo
 - **Tilt image with motion overlay** on the left; **power spectrum and diagnostic plots** on the right (CTF fit, CTF resolution, defocus, and motion vs tilt angle)
 - **Images from `average/`** — every acquired tilt is shown (loaded from the per-tilt motion-corrected averages), so excluded tilts remain visible and can be re-included later
 - **Motion track overlay** drawn spatially on the tilt image — each patch placed at its correct grid position and colour-coded by motion magnitude (green = low, red = high). Toggle on/off with a checkbox or `Ctrl+M`
-- **CTF-colour-coded overview bar** — ordered by tilt angle (0° centre, extremes at the edges); click any bar to jump directly to that tilt. Category colours **and the CTF thresholds** are customisable.
+- **CTF-colour-coded overview bar** — ordered by tilt angle (0° centre, extremes at the edges); click any bar to jump directly to that tilt, or **hover** to preview that tilt's image without clicking. Category colours **and the CTF thresholds** are customisable.
 - **Exclusion** of bad tilts writes to `<UseTilt>` in the tilt-series XML (mapped by tilt angle); the `.tomostar` is never modified, and previous exclusions are restored automatically on next load
 - **Bulk exclude-by-colour** — exclude all tilts of a category (purple / amber / orange) in one click, on the current dataset or across all loaded datasets
-- **Whole-dataset rejection** — "Exclude ALL frames" marks every tilt in a dataset excluded; "Exclude dataset" moves its XML out to `excluded_datasets/` so downstream WarpTools / miss-alignment steps skip it entirely
-- **Scrollable tilt series list** — switch between datasets with a click
+- **Trim extremes** — exclude a tilt-angle range at each end of the series with two angle limits, previewed live on the overview bar, applied to the current dataset or all datasets
+- **Whole-dataset rejection** — "Exclude ALL frames" marks every tilt in a dataset excluded; "Exclude dataset" moves its XML out to `excluded_datasets/` so downstream WarpTools / miss-alignment steps skip it entirely; or multi-select in the list and "Exclude selected datasets" to reject several at once
+- **Scrollable, multi-selectable tilt series list** — switch between datasets with a click; Ctrl/Shift-click to select several for batch rejection
 - **Automatic dataset ranking** — the tilt-series list is ranked by quality (best at the top, #1 = best) using CTF resolution, motion, and, once alignment has run, the miss-alignment loss. Auto-detects whether alignment has been done and ranks accordingly. Ranking runs in the background so the window opens fast even for hundreds of tomograms.
 - **Per-tilt metadata** — CTF fit (Å), defocus (µm), and motion (Å) from WarpTools per-frame XML
 
@@ -270,6 +271,8 @@ multiplied by the fitted scale envelope. Both share the same envelope and decay 
 
 One coloured bar per tilt, **ordered by tilt angle** — the most negative tilt on the left, 0° in the centre, and the most positive on the right. For a dose-symmetric series (e.g. −60° → +60°) this means the bar mirrors the physical tilt geometry rather than the acquisition order. Sparse angle labels are shown along the axis. **Click any bar to jump directly to that tilt.**
 
+**Hover preview.** Move the mouse across the bar and a small popup shows that tilt's image, updating as you sweep — no clicking needed, so you can scan a whole series quickly. Thumbnails for the current series are downscaled and preloaded in the background when a dataset opens (a few MB in memory, no disk cache), so hovering is smooth; a tilt not yet loaded briefly shows "loading…".
+
 Colour coding (priority order):
 
 | Colour | Meaning |
@@ -292,7 +295,16 @@ A row of coloured buttons below the main controls excludes every tilt of a given
 
 The purple/amber CTF boundaries default to 10 Å and 8 Å but are adjustable (see `--ctf_amber` / `--ctf_purple` and the Categories… dialog); the button labels update to match. These act on the current tilt series and respect existing exclusions (already excluded tilts are left as-is). The result is saved to `<UseTilt>` like any other exclusion.
 
-A second row — **"Exclude in ALL datasets"** — applies the same category exclusion to *every* loaded dataset at once. Because this is a sweeping action, it asks for confirmation first, and then offers to save the exclusions to all affected tilt-series XMLs in one step.
+A second row — **"Exclude in ALL datasets"** — applies the same category exclusion to *every* loaded dataset at once. Because this is a sweeping action, it asks for confirmation first, and then offers to save the exclusions to all affected tilt-series XMLs in one step. The two rows share a grid so the category buttons line up in columns.
+
+### Trim extremes
+
+A dedicated row excludes a **tilt-angle range at each end** of the series — the common "chop the worst high-tilt images off both ends" operation. Two angle limits, **keep −X° to +Y°**, define the range to keep; tilts more negative than the low limit or more positive than the high limit are excluded.
+
+- **Live preview.** As you change either limit, the overview bar shows exactly which tilts would drop — the affected bars are drawn in the excluded colour with a **white outline** — so you can dial it in before committing.
+- **Apply to current** commits the trim on the current dataset; **Apply to all datasets** applies the same angle limits to every loaded dataset (loading each as needed).
+
+Trimming is *additive* — it adds exclusions for the out-of-range tilts. If you overshoot, use **All On** (`Ctrl+R`) to clear the dataset's exclusions and dial the limits in again. As with every exclusion, nothing is written until you Save.
 
 ### Rejecting a whole dataset
 
@@ -302,6 +314,8 @@ Two buttons in the bulk row handle whole-dataset rejection, and they do differen
 - **Exclude dataset** (red outline) — takes the dataset **out of processing entirely** by moving its tilt-series XML into an `excluded_datasets/` subdirectory (a timestamped backup is written to `xml_original_backups/` first), then removing it from the list. Because WarpTools and miss-alignment glob `*.xml` in the processing directory and not its subdirectories, the dataset is then skipped by every downstream step. The `.tomostar` and raw data are left untouched — move the XML back out of `excluded_datasets/` to restore it.
 
 Prefer **Exclude dataset** for a tomogram you want to drop from the run: a fully-excluded-but-still-present XML (what "Exclude ALL frames" leaves behind) prepares to an empty stack, which can crash `miss-alignment`. Moving it out avoids that.
+
+**Rejecting several at once.** Ctrl/Shift-click multiple datasets in the tilt-series list, then click **Exclude selected datasets** (below the list) to move all of their XMLs into `excluded_datasets/` in one action (backups kept, one confirmation). This is the batch form of "Exclude dataset". A plain single click in the list still just switches to that dataset.
 
 ### Tilt series list (ranked)
 
@@ -340,7 +354,9 @@ The alignment loss is miss-alignment's own precision-weighted model score (lower
 |---|---|
 | **Scroll wheel over the tilt image** | Step through tilts (follows the angle-sorted order — scroll up for more positive tilts, down for more negative) |
 | **Click a bar in the overview** | Jump directly to that tilt |
+| **Hover a bar in the overview** | Preview that tilt's image in a popup (no click needed) |
 | **Click a name in the tilt series list** | Switch to that series |
+| **Ctrl/Shift-click names in the list** | Select several datasets for batch rejection ("Exclude selected datasets") |
 
 ---
 

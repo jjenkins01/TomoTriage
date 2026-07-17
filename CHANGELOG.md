@@ -5,6 +5,28 @@ are documented here.
 
 ---
 
+## [2.6.0] - 2026-07-17
+
+### Added
+- **Trim extremes (angle-range exclusion).** A row with two angle limits
+  ("keep -X to +Y") excludes tilts beyond either end of the series. It previews
+  live on the overview bar (would-be-excluded bars are outlined) and commits with
+  **Apply to current** or **Apply to all datasets**.
+- **Overview-bar hover preview.** Hovering the tilt bar at the bottom pops up a
+  small image of that tilt and updates as you sweep across, with no clicking
+  (like Warp). Thumbnails for the current series are downscaled and preloaded in
+  a background thread (~5 MB in memory, no disk cache), so hover is smooth.
+- **Batch-exclude datasets.** Ctrl/Shift-click multiple datasets in the ranked
+  list and use **Exclude selected datasets** to move all their XMLs into
+  excluded_datasets/ at once (backups kept), the batch form of "Exclude dataset".
+
+### Changed
+- **Aligned the bulk-exclude buttons.** The "Exclude all:" and "Exclude in ALL
+  datasets:" rows are now laid out in a shared grid, so the purple/amber/orange
+  category buttons line up in columns despite the different-width row labels.
+
+---
+
 ## [2.5.0] - 2026-07-15
 
 ### Changed

@@ -73,7 +73,8 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QListWidget,
     QPushButton, QCheckBox, QComboBox, QHBoxLayout, QVBoxLayout,
     QSizePolicy, QSplitter, QStatusBar, QDoubleSpinBox,
-    QDialog, QGridLayout, QColorDialog, QMessageBox, QSplashScreen
+    QDialog, QGridLayout, QColorDialog, QMessageBox, QSplashScreen,
+    QGroupBox, QAbstractItemView
 )
 from PyQt5.QtGui import (
     QImage, QPixmap, QColor, QPainter, QPen, QPainterPath,
@@ -1039,6 +1040,8 @@ class ImageLabel(QLabel):
 
 class OverviewCanvas(FigureCanvasQTAgg):
     tilt_clicked = pyqtSignal(int)
+    tilt_hovered = pyqtSignal(int, int, int)   # real_idx, global_x, global_y
+    hover_left = pyqtSignal()
 
     def __init__(self, parent=None, colors=None):
         fig = plt.Figure(figsize=(10, 0.7), facecolor=C_PANEL)
@@ -1052,24 +1055,55 @@ class OverviewCanvas(FigureCanvasQTAgg):
         self._n = 0
         self._order = []      # display position -> real tilt index
         self.colors = colors or CategoryColors()
+        self._hover_pos = -1  # last hovered display position
         self.mpl_connect('button_press_event', self._bar_click)
+        self.mpl_connect('motion_notify_event', self._bar_hover)
+        self.mpl_connect('axes_leave_event', self._bar_leave)
+        self.mpl_connect('figure_leave_event', self._bar_leave)
+
+    def _pos_from_event(self, event):
+        if event.xdata is None or self._n <= 0:
+            return None
+        return max(0, min(int(round(event.xdata)), self._n - 1))
 
     def _bar_click(self, event):
-        if event.xdata is not None and event.button == 1 and self._n > 0:
-            pos = max(0, min(int(round(event.xdata)), self._n - 1))
-            # Map the clicked display position back to the real tilt index
-            real = self._order[pos] if pos < len(self._order) else pos
-            self.tilt_clicked.emit(real)
+        if event.button == 1:
+            pos = self._pos_from_event(event)
+            if pos is not None:
+                real = self._order[pos] if pos < len(self._order) else pos
+                self.tilt_clicked.emit(real)
+
+    def _bar_hover(self, event):
+        pos = self._pos_from_event(event)
+        if pos is None:
+            self._bar_leave(event)
+            return
+        real = self._order[pos] if pos < len(self._order) else pos
+        # Map canvas pixel coords (origin bottom-left) to global screen coords
+        # (origin top-left) so the preview can sit just above the cursor.
+        gx = int(self.mapToGlobal(self.rect().topLeft()).x() + event.x)
+        gy = int(self.mapToGlobal(self.rect().topLeft()).y()
+                 + (self.height() - event.y))
+        self._hover_pos = pos
+        self.tilt_hovered.emit(real, gx, gy)
+
+    def _bar_leave(self, _event):
+        if self._hover_pos != -1:
+            self._hover_pos = -1
+            self.hover_left.emit()
 
     def update_overview(self, excluded, flagged, current_idx,
                         ctf_values=None, order=None, angles=None,
-                        ctf_mod=8.0, ctf_bad=10.0):
+                        ctf_mod=8.0, ctf_bad=10.0, preview_exclude=None):
         """
         order : list mapping display position -> real tilt index. When given
                 (angle-sorted), the bar is drawn in that order so the centre
                 is 0 deg and the extremes sit at the edges. Defaults to natural
                 acquisition order.
         angles: real per-tilt angles, used for sparse x-axis tick labels.
+        preview_exclude: optional per-tilt bool list of tilts that WOULD be
+                excluded by the pending trim (drawn in the excluded colour with
+                a white outline to distinguish them from committed exclusions).
         """
         self._n = len(excluded)
         n = len(excluded)
@@ -1083,8 +1117,14 @@ class OverviewCanvas(FigureCanvasQTAgg):
 
         C = self.colors
         colours = []
+        edges = []
+        lws = []
         for real in order:
+            preview = (preview_exclude is not None and real < len(preview_exclude)
+                       and preview_exclude[real] and not excluded[real])
             if excluded[real]:
+                colours.append(C['excluded'])
+            elif preview:
                 colours.append(C['excluded'])
             elif flagged[real]:
                 colours.append(C['flagged'])
@@ -1095,8 +1135,11 @@ class OverviewCanvas(FigureCanvasQTAgg):
                 else:               colours.append(C['good'])
             else:
                 colours.append(C['good'])
+            edges.append('#ffffff' if preview else 'none')
+            lws.append(1.4 if preview else 0.0)
 
-        self.ax.bar(range(n), [1]*n, color=colours, width=0.85, edgecolor='none')
+        self.ax.bar(range(n), [1]*n, color=colours, width=0.85,
+                    edgecolor=edges, linewidth=lws)
 
         # Highlight current tilt at its DISPLAY position
         try:
@@ -1429,6 +1472,104 @@ class _RankingThread(QThread):
         self.finished_metrics.emit(metrics)
 
 
+class _ThumbLoader(QThread):
+    """
+    Background thread that builds small downscaled preview thumbnails (QImage)
+    for every tilt of one series, for the overview-bar hover preview. Emits each
+    thumbnail as it is ready; a stop flag lets a series-switch abandon the rest.
+    Produces QImage (safe to build off the GUI thread); the GUI converts to
+    QPixmap on display. Memory is bounded to one series (~5 MB).
+    """
+    thumb_ready = pyqtSignal(int, int, object)   # series_idx, real_idx, QImage
+
+    MAX_PX = 320
+
+    def __init__(self, series_idx, paths, contrast_lo, contrast_hi):
+        super().__init__()
+        self._series_idx = series_idx
+        self._paths = paths
+        self._lo = contrast_lo
+        self._hi = contrast_hi
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    def run(self):
+        for real_idx, path in enumerate(self._paths):
+            if self._stop:
+                return
+            img = load_mrc_image(path)
+            if img is None:
+                continue
+            qimg = self._to_thumb(img)
+            if qimg is not None:
+                self.thumb_ready.emit(self._series_idx, real_idx, qimg)
+
+    def _to_thumb(self, arr):
+        try:
+            h, w = arr.shape
+            step = max(1, int(max(h, w) / self.MAX_PX))
+            small = arr[::step, ::step]
+            lo = float(np.percentile(small, self._lo))
+            hi = float(np.percentile(small, self._hi))
+            eps = max(hi - lo, 1e-6)
+            g8 = (np.clip((small - lo) / eps, 0, 1) * 255).astype(np.uint8)
+            g8 = np.ascontiguousarray(g8)
+            hh, ww = g8.shape
+            return QImage(g8.data, ww, hh, ww,
+                          QImage.Format_Grayscale8).copy()
+        except Exception:
+            return None
+
+
+class HoverPreview(QWidget):
+    """
+    Small frameless popup that shows a tilt's preview image while the mouse
+    hovers over the overview bar. Follows the cursor; never steals focus.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.ToolTip | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setStyleSheet(
+            f"background:{C_BG}; border:2px solid {C_HOVER};")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(2)
+        self._img = QLabel()
+        self._img.setFixedSize(240, 240)
+        self._img.setAlignment(Qt.AlignCenter)
+        self._img.setStyleSheet("border:none;")
+        self._cap = QLabel()
+        self._cap.setAlignment(Qt.AlignCenter)
+        self._cap.setStyleSheet(
+            f"color:{C_TEXT}; font-size:11px; font-weight:bold; border:none;")
+        lay.addWidget(self._img)
+        lay.addWidget(self._cap)
+
+    def show_thumb(self, qimage, caption, gx, gy):
+        if qimage is not None:
+            pm = QPixmap.fromImage(qimage).scaled(
+                240, 240, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self._img.setPixmap(pm)
+        else:
+            self._img.setPixmap(QPixmap())
+            self._img.setText("loading\u2026")
+        self._cap.setText(caption)
+        self.adjustSize()
+        # sit just above the cursor, clamped to the screen
+        x = gx - self.width() // 2
+        y = gy - self.height() - 14
+        scr = QApplication.desktop().screenGeometry(QApplication.desktop()
+                                                    .screenNumber(self))
+        x = max(scr.left() + 4, min(x, scr.right() - self.width() - 4))
+        if y < scr.top() + 4:
+            y = gy + 20
+        self.move(x, y)
+        if not self.isVisible():
+            self.show()
+
+
 class MainWindow(QMainWindow):
 
     def __init__(self, series_list, frame_dir=None,
@@ -1493,6 +1634,8 @@ class MainWindow(QMainWindow):
 
         # Kick off ranking in the background once the event loop is running.
         QTimer.singleShot(0, self._start_background_ranking)
+        # Preload hover thumbnails for the first series.
+        QTimer.singleShot(0, self._start_thumb_loader)
 
     # ── Ranking ─────────────────────────────────────────────────────────────
 
@@ -1615,6 +1758,9 @@ class MainWindow(QMainWindow):
 
         self._ranking_done = True
         self._rebuild_series_list_widget()
+        # series were reordered -> refresh hover thumbnails for the (possibly
+        # re-indexed) current series
+        self._start_thumb_loader()
 
         n_ranked = sum(1 for r in ranks if r is not None)
         mode = "post-alignment (CTF + motion + loss)" if used_loss \
@@ -1843,10 +1989,27 @@ class MainWindow(QMainWindow):
         self.series_list_widget.setCurrentRow(0)
         self.series_list_widget.currentRowChanged.connect(
             self._on_series_changed)
+        # Ctrl/Shift-click to build a multi-selection for batch operations;
+        # a plain click still switches the displayed dataset.
+        self.series_list_widget.setSelectionMode(
+            QAbstractItemView.ExtendedSelection)
         # Click-to-select but never hold keyboard focus, so arrow keys always
         # reach the main window's keyPressEvent
         self.series_list_widget.setFocusPolicy(Qt.ClickFocus)
         right_layout.addWidget(self.series_list_widget)
+
+        # Batch-reject every currently selected dataset (moves each XML out).
+        btn_excl_sel = QPushButton("Exclude selected datasets")
+        btn_excl_sel.setToolTip(
+            "Ctrl/Shift-click datasets in the list above, then move all of "
+            "their tilt-series XMLs into excluded_datasets/ at once.")
+        btn_excl_sel.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {C_RED}; "
+            f"font-size: 11px; border: 1px solid {C_RED}; border-radius: 4px; "
+            f"padding: 4px 6px; }}"
+            f"QPushButton:hover {{ background: {C_RED}; color: white; }}")
+        btn_excl_sel.clicked.connect(self._exclude_selected_datasets)
+        right_layout.addWidget(btn_excl_sel)
         right.setMinimumWidth(180); right.setMaximumWidth(280)
         splitter.addWidget(right)
 
@@ -1856,6 +2019,12 @@ class MainWindow(QMainWindow):
         # ── Overview bar ──────────────────────────────────────────────
         self.overview = OverviewCanvas(colors=self.colors)
         self.overview.tilt_clicked.connect(self._on_overview_click)
+        self.overview.tilt_hovered.connect(self._on_tilt_hovered)
+        self.overview.hover_left.connect(self._on_hover_left)
+        self._hover_preview = HoverPreview(self)
+        self._thumb_cache = {}          # real_idx -> QImage (current series)
+        self._thumb_series = -1         # which series the cache belongs to
+        self._thumb_loader = None
         root.addWidget(self.overview, stretch=0)
 
         # ── Info bar ──────────────────────────────────────────────────
@@ -1920,28 +2089,29 @@ class MainWindow(QMainWindow):
 
         root.addLayout(btn_row, stretch=0)
 
-        # ── Bulk exclude-by-colour row ────────────────────────────────
-        # Quickly exclude every tilt of a given overview-bar category with a
-        # single click, instead of stepping through them one at a time.
-        bulk_row = QHBoxLayout()
-        bulk_row.setSpacing(6)
+        # ── Bulk exclude rows (aligned in a grid) ─────────────────────
+        # Two rows: "Exclude all:" (current dataset) and "Exclude in ALL
+        # datasets:". Laid out in a grid so the category buttons line up in
+        # columns despite the different-width labels.
+        bulk_grid = QGridLayout()
+        bulk_grid.setHorizontalSpacing(6)
+        bulk_grid.setVerticalSpacing(4)
 
         bulk_lbl = QLabel("Exclude all:")
         bulk_lbl.setStyleSheet(
             f"color: {C_TEXT}; font-size: 12px; font-weight: bold; "
             f"padding: 6px 4px;")
-        bulk_row.addWidget(bulk_lbl)
+        bulk_grid.addWidget(bulk_lbl, 0, 0)
 
         # (category -> button); labels reflect the live CTF thresholds
         bulk_categories = ['ctf_bad', 'ctf_mod', 'flagged']
         self._bulk_buttons = []   # (button, category) for live recolour
-        for category in bulk_categories:
+        for col, category in enumerate(bulk_categories):
             b = QPushButton(self._ctf_button_label(category))
             b.clicked.connect(
                 lambda _checked, c=category: self._exclude_category(c))
             self._bulk_buttons.append((b, category))
-            bulk_row.addWidget(b)
-        self._restyle_bulk_buttons()
+            bulk_grid.addWidget(b, 0, 1 + col)
 
         # Exclude every tilt in the current dataset (reject the whole dataset).
         btn_all_frames = QPushButton("Exclude ALL frames")
@@ -1951,12 +2121,10 @@ class MainWindow(QMainWindow):
             f"padding: 6px 10px; }}"
             f"QPushButton:hover {{ background: #b91c1c; }}")
         btn_all_frames.clicked.connect(self._exclude_all_frames)
-        bulk_row.addWidget(btn_all_frames)
+        bulk_grid.addWidget(btn_all_frames, 0, 4)
 
         # Reject the whole dataset by MOVING its XML out of the processing dir
-        # into excluded_datasets/ (so WarpTools / miss-alignment skip it). Styled
-        # as an outline to distinguish "remove from processing" from the solid
-        # "Exclude ALL frames" (which only marks tilts).
+        # into excluded_datasets/ (so WarpTools / miss-alignment skip it).
         btn_excl_ds = QPushButton("Exclude dataset")
         btn_excl_ds.setToolTip(
             "Move this dataset's tilt-series XML into an excluded_datasets/ "
@@ -1968,34 +2136,71 @@ class MainWindow(QMainWindow):
             f"padding: 5px 10px; }}"
             f"QPushButton:hover {{ background: {C_RED}; color: white; }}")
         btn_excl_ds.clicked.connect(self._exclude_dataset)
-        bulk_row.addWidget(btn_excl_ds)
+        bulk_grid.addWidget(btn_excl_ds, 0, 5)
 
         # Category settings (colours + CTF thresholds)
         btn_colours = _btn("Categories\u2026", self._open_color_picker)
-        bulk_row.addWidget(btn_colours)
-
-        bulk_row.addStretch(1)
-        root.addLayout(bulk_row, stretch=0)
+        bulk_grid.addWidget(btn_colours, 0, 6)
 
         # Second row: exclude a category across ALL loaded datasets at once.
         # These are destructive/sweeping, so each asks for confirmation.
-        allbulk_row = QHBoxLayout()
-        allbulk_row.setSpacing(6)
         allbulk_lbl = QLabel("Exclude in ALL datasets:")
         allbulk_lbl.setStyleSheet(
             f"color: {C_YELLOW}; font-size: 12px; font-weight: bold; "
             f"padding: 6px 4px;")
-        allbulk_row.addWidget(allbulk_lbl)
+        bulk_grid.addWidget(allbulk_lbl, 1, 0)
         self._allbulk_buttons = []
-        for category in bulk_categories:
+        for col, category in enumerate(bulk_categories):
             b = QPushButton(self._ctf_button_label(category))
             b.clicked.connect(
                 lambda _checked, c=category: self._exclude_category_all(c))
             self._allbulk_buttons.append((b, category))
-            allbulk_row.addWidget(b)
+            bulk_grid.addWidget(b, 1, 1 + col)
+
         self._restyle_bulk_buttons()
-        allbulk_row.addStretch(1)
-        root.addLayout(allbulk_row, stretch=0)
+        bulk_grid.setColumnStretch(7, 1)      # keep everything left-aligned
+        root.addLayout(bulk_grid, stretch=0)
+
+        # ── Trim extremes (exclude a tilt-angle range at each end) ─────
+        # Two angle limits: tilts more negative than the low limit or more
+        # positive than the high limit are excluded. Live preview on the
+        # overview bar (outlined bars); commit with the Apply buttons.
+        trim_row = QHBoxLayout()
+        trim_row.setSpacing(6)
+        trim_lbl = QLabel("Trim extremes:")
+        trim_lbl.setStyleSheet(
+            f"color: {C_TEXT}; font-size: 12px; font-weight: bold; "
+            f"padding: 6px 4px;")
+        trim_row.addWidget(trim_lbl)
+        trim_row.addWidget(QLabel("keep"))
+        self._trim_lo = QDoubleSpinBox()
+        self._trim_lo.setRange(-90, 90); self._trim_lo.setDecimals(1)
+        self._trim_lo.setSingleStep(2.0); self._trim_lo.setValue(-90.0)
+        self._trim_lo.setSuffix("\u00b0")
+        self._trim_lo.setToolTip("Exclude tilts more negative than this angle")
+        trim_row.addWidget(self._trim_lo)
+        trim_row.addWidget(QLabel("to"))
+        self._trim_hi = QDoubleSpinBox()
+        self._trim_hi.setRange(-90, 90); self._trim_hi.setDecimals(1)
+        self._trim_hi.setSingleStep(2.0); self._trim_hi.setValue(90.0)
+        self._trim_hi.setSuffix("\u00b0")
+        self._trim_hi.setToolTip("Exclude tilts more positive than this angle")
+        trim_row.addWidget(self._trim_hi)
+        self._trim_lo.valueChanged.connect(self._on_trim_changed)
+        self._trim_hi.valueChanged.connect(self._on_trim_changed)
+        btn_trim_cur = QPushButton("Apply to current")
+        btn_trim_cur.clicked.connect(
+            lambda: self._apply_trim(all_datasets=False))
+        trim_row.addWidget(btn_trim_cur)
+        btn_trim_all = QPushButton("Apply to all datasets")
+        btn_trim_all.clicked.connect(
+            lambda: self._apply_trim(all_datasets=True))
+        trim_row.addWidget(btn_trim_all)
+        trim_hint = QLabel("(live preview \u2014 outlined bars will be excluded)")
+        trim_hint.setStyleSheet(f"color: {C_DIM}; font-size: 10px;")
+        trim_row.addWidget(trim_hint)
+        trim_row.addStretch(1)
+        root.addLayout(trim_row, stretch=0)
 
     # ── Keyboard shortcuts (keyPressEvent avoids QListWidget focus issue) ──
 
@@ -2062,7 +2267,8 @@ class MainWindow(QMainWindow):
                                       order=s['angle_order'],
                                       angles=s['angles'],
                                       ctf_mod=self.ctf_mod,
-                                      ctf_bad=self.ctf_bad)
+                                      ctf_bad=self.ctf_bad,
+                                      preview_exclude=self._trim_preview_array(s))
 
         # Right-hand plots: CTF fit (current tilt) + res/defocus/motion scatter
         per_tilt_colours = [self.colors[self._categorise(i)]
@@ -2104,6 +2310,7 @@ class MainWindow(QMainWindow):
         if idx < 0 or idx == self.series_idx: return
         self.series_idx = idx; self.tilt_idx = 0
         self._load_series(idx); self._refresh()
+        self._start_thumb_loader()
         # Return focus to the main window so arrow keys / shortcuts work
         # immediately without needing to click elsewhere first
         self.setFocus()
@@ -2111,6 +2318,154 @@ class MainWindow(QMainWindow):
     def _on_overview_click(self, idx):
         if idx != self.tilt_idx:
             self.tilt_idx = idx; self._refresh()
+
+    # ── Overview-bar hover preview ────────────────────────────────────
+    def _start_thumb_loader(self):
+        """(Re)start the background thumbnail loader for the current series."""
+        if self._thumb_loader is not None:
+            self._thumb_loader.stop()
+            self._thumb_loader = None
+        self._thumb_cache = {}
+        self._thumb_series = self.series_idx
+        s = self._s()
+        loader = _ThumbLoader(self.series_idx, list(s['image_paths']),
+                              self.clo, self.chi)
+        loader.thumb_ready.connect(self._on_thumb_ready)
+        self._thumb_loader = loader
+        loader.start()
+
+    def _on_thumb_ready(self, series_idx, real_idx, qimg):
+        # ignore stale results from a previous series
+        if series_idx == self._thumb_series:
+            self._thumb_cache[real_idx] = qimg
+
+    def _on_tilt_hovered(self, real_idx, gx, gy):
+        s = self._s()
+        ang = s['angles'][real_idx] if real_idx < len(s['angles']) else real_idx
+        state = ""
+        if s['excluded'][real_idx]:
+            state = "  (excluded)"
+        elif s['flagged'][real_idx]:
+            state = "  (flagged)"
+        cap = f"tilt {real_idx + 1}/{s['n']}   {ang:+.1f}\u00b0{state}"
+        self._hover_preview.show_thumb(
+            self._thumb_cache.get(real_idx), cap, gx, gy)
+
+    def _on_hover_left(self):
+        self._hover_preview.hide()
+
+    # ── Trim extremes (angle-range exclusion) ─────────────────────────
+    def _trim_preview_array(self, s):
+        """Per-tilt bools: which tilts the current trim limits would exclude."""
+        lo = self._trim_lo.value()
+        hi = self._trim_hi.value()
+        if lo <= -90 and hi >= 90:
+            return None
+        return [(a < lo or a > hi) for a in s['angles']]
+
+    def _on_trim_changed(self, _val=None):
+        # keep lo <= hi and refresh the live preview
+        if self._trim_lo.value() > self._trim_hi.value():
+            # nudge the other spinbox rather than fight the user
+            if self.sender() is self._trim_lo:
+                self._trim_hi.blockSignals(True)
+                self._trim_hi.setValue(self._trim_lo.value())
+                self._trim_hi.blockSignals(False)
+            else:
+                self._trim_lo.blockSignals(True)
+                self._trim_lo.setValue(self._trim_hi.value())
+                self._trim_lo.blockSignals(False)
+        self._refresh()
+
+    def _apply_trim(self, all_datasets=False):
+        lo = self._trim_lo.value()
+        hi = self._trim_hi.value()
+        if lo <= -90 and hi >= 90:
+            self.statusBar().showMessage(
+                "Set the keep-range narrower than the full tilt range first",
+                3000)
+            return
+
+        def trim_series(s):
+            c = 0
+            for i in range(s['n']):
+                a = s['angles'][i]
+                if (a < lo or a > hi) and not s['excluded'][i]:
+                    s['excluded'][i] = True
+                    c += 1
+            return c
+
+        if not all_datasets:
+            n = trim_series(self._s())
+            self._refresh()
+            self.statusBar().showMessage(
+                f"Trimmed {n} tilt(s) outside {lo:+.1f}\u00b0..{hi:+.1f}\u00b0 "
+                f"in this dataset", 4000)
+            self.setFocus()
+            return
+
+        reply = QMessageBox.question(
+            self, "Trim extremes in ALL datasets",
+            f"Exclude every tilt outside {lo:+.1f}\u00b0 to {hi:+.1f}\u00b0 in "
+            f"ALL {len(self.series_list)} datasets?\n\nThis loads each dataset "
+            f"and marks the out-of-range tilts excluded (not saved until you "
+            f"Save each, or use Save across datasets).",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            self.setFocus()
+            return
+        total = 0
+        for idx in range(len(self.series_list)):
+            self._load_series(idx)
+            total += trim_series(self._cache[idx])
+        self._refresh()
+        self.statusBar().showMessage(
+            f"Trimmed {total} tilt(s) across {len(self.series_list)} datasets "
+            f"(remember to Save)", 5000)
+        self.setFocus()
+
+    # ── Batch-exclude selected datasets ───────────────────────────────
+    def _exclude_selected_datasets(self):
+        rows = sorted(i.row() for i in
+                      self.series_list_widget.selectedIndexes())
+        if not rows:
+            self.statusBar().showMessage(
+                "Select one or more datasets in the list first "
+                "(Ctrl/Shift-click)", 3000)
+            self.setFocus()
+            return
+        names = [self._series_name(self.series_list[r][0]) for r in rows]
+        preview = ", ".join(names[:6]) + (" \u2026" if len(names) > 6 else "")
+        reply = QMessageBox.question(
+            self, "Exclude selected datasets",
+            f"Move {len(rows)} dataset(s) out of processing?\n\n{preview}\n\n"
+            f"Each tilt-series XML is moved into excluded_datasets/ (with a "
+            f"backup) and removed from the list. The .tomostar and raw data are "
+            f"left untouched.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            self.setFocus()
+            return
+        # Move each XML, then remove rows high-index-first so indices stay valid.
+        moved = 0
+        for r in rows:
+            _tp, xml_path = self.series_list[r]
+            if self._move_dataset_xml(xml_path,
+                                      self._series_name(self.series_list[r][0])):
+                moved += 1
+        for r in sorted(rows, reverse=True):
+            self._remove_series_at(r, refresh=False)
+        if self.series_list:
+            self.series_idx = min(self.series_idx, len(self.series_list) - 1)
+            self.tilt_idx = 0
+            self._load_series(self.series_idx)
+            self._rebuild_series_list_widget()
+            self._refresh()
+            self._start_thumb_loader()
+        self.statusBar().showMessage(
+            f"Excluded {moved} dataset(s) \u2014 XMLs moved to "
+            f"excluded_datasets/", 5000)
+        self.setFocus()
 
     def _on_prev(self):
         if self.tilt_idx > 0:
@@ -2257,29 +2612,7 @@ class MainWindow(QMainWindow):
             self.setFocus()
             return
 
-        try:
-            xml_dir = os.path.dirname(os.path.abspath(xml_path))
-            stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            # 1) backup (same convention as Save)
-            backup_dir = os.path.join(xml_dir, 'xml_original_backups')
-            os.makedirs(backup_dir, exist_ok=True)
-            shutil.copy2(
-                xml_path,
-                os.path.join(backup_dir,
-                             os.path.basename(xml_path) + f'.backup_{stamp}'))
-            # 2) move into excluded_datasets/
-            excl_dir = os.path.join(xml_dir, 'excluded_datasets')
-            os.makedirs(excl_dir, exist_ok=True)
-            dest = os.path.join(excl_dir, os.path.basename(xml_path))
-            if os.path.exists(dest):     # never clobber a previous exclusion
-                dest = os.path.join(
-                    excl_dir, os.path.basename(xml_path) + f'.{stamp}')
-            shutil.move(xml_path, dest)
-            print(f"  Excluded dataset '{name}': moved XML -> {dest}")
-        except Exception as e:
-            QMessageBox.critical(
-                self, "Exclude dataset failed",
-                f"Could not move the XML for '{name}':\n{e}")
+        if not self._move_dataset_xml(xml_path, name):
             self.setFocus()
             return
 
@@ -2289,7 +2622,42 @@ class MainWindow(QMainWindow):
             5000)
         self.setFocus()
 
-    def _remove_series_at(self, k):
+    def _move_dataset_xml(self, xml_path, name):
+        """
+        Move one tilt-series XML into excluded_datasets/ (with a timestamped
+        backup in xml_original_backups/). Returns True on success. Shared by the
+        single "Exclude dataset" and the batch "Exclude selected datasets".
+        """
+        if not xml_path or not os.path.isfile(xml_path):
+            QMessageBox.warning(
+                self, "Cannot exclude dataset",
+                f"No tilt-series XML found on disk for '{name}'.")
+            return False
+        try:
+            xml_dir = os.path.dirname(os.path.abspath(xml_path))
+            stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_dir = os.path.join(xml_dir, 'xml_original_backups')
+            os.makedirs(backup_dir, exist_ok=True)
+            shutil.copy2(
+                xml_path,
+                os.path.join(backup_dir,
+                             os.path.basename(xml_path) + f'.backup_{stamp}'))
+            excl_dir = os.path.join(xml_dir, 'excluded_datasets')
+            os.makedirs(excl_dir, exist_ok=True)
+            dest = os.path.join(excl_dir, os.path.basename(xml_path))
+            if os.path.exists(dest):
+                dest = os.path.join(
+                    excl_dir, os.path.basename(xml_path) + f'.{stamp}')
+            shutil.move(xml_path, dest)
+            print(f"  Excluded dataset '{name}': moved XML -> {dest}")
+            return True
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Exclude dataset failed",
+                f"Could not move the XML for '{name}':\n{e}")
+            return False
+
+    def _remove_series_at(self, k, refresh=True):
         """
         Remove series index k from the in-memory model and the list widget,
         remapping the (index-keyed) image cache and choosing a sensible new
@@ -2311,6 +2679,11 @@ class MainWindow(QMainWindow):
             elif old_i > k:
                 new_cache[old_i - 1] = val
         self._cache = new_cache
+        if self.series_idx > k:
+            self.series_idx -= 1
+
+        if not refresh:
+            return
 
         if not self.series_list:
             self.series_idx = 0
@@ -2329,6 +2702,7 @@ class MainWindow(QMainWindow):
         self._load_series(self.series_idx)
         self._rebuild_series_list_widget()
         self._refresh()
+        self._start_thumb_loader()
 
     def _categorise_in(self, s, i):
         """Category of tilt i within an arbitrary loaded series dict s."""
