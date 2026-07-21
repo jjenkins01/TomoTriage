@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tomotriage"
-version = "2.6.0"
+version = "2.7.0"
 description = "An interactive quality control tool for tilt series data processed with WarpTools"
 readme = "README.md"
 requires-python = ">=3.10"

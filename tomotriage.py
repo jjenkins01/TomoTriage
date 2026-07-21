@@ -55,6 +55,7 @@ Keyboard shortcuts
   Ctrl+Q         save + quit
   Ctrl+R         reset (include all)
   Ctrl+M         toggle motion overlay
+  Ctrl+I         flag/unflag dataset as containing particles of interest
 """
 
 import os, sys, glob, shutil, argparse, json
@@ -135,32 +136,6 @@ class CategoryColors:
     def set(self, key, hexcolor):
         if key in self.colors:
             self.colors[key] = hexcolor
-
-# ---------------------------------------------------------------------------
-# Sound
-# ---------------------------------------------------------------------------
-
-def _play_exclude_sound():
-    try:
-        import wave, struct, math, tempfile, subprocess
-        sr = 44100; dur = 0.18
-        frames = []
-        for i in range(int(sr * dur)):
-            t = i / sr
-            f = 500 * (1 - t / dur * 0.75)
-            v = 0.25 * max(0, 1 - t / dur)
-            frames.append(struct.pack('<h', int(v * 32767 *
-                           math.sin(2 * math.pi * f * t))))
-        tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
-        tmp.close()
-        with wave.open(tmp.name, 'w') as wf:
-            wf.setnchannels(1); wf.setsampwidth(2)
-            wf.setframerate(sr); wf.writeframes(b''.join(frames))
-        subprocess.Popen(['aplay', '-q', tmp.name],
-                         stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
 
 # ---------------------------------------------------------------------------
 # Motion track colour helper  (green → yellow → red by arc-length)
@@ -789,7 +764,7 @@ class ImageLabel(QLabel):
         self._series_excluded = False
         self._candidate    = False
         self._motion_data  = None
-        self._show_motion  = True
+        self._show_motion  = False   # off by default; toggled in the GUI
         self._local_motion = False   # subtract mean shift (show only local)
         self._motion_scale = 1.0     # display magnification of tracks
         self.setMinimumSize(200, 150)
@@ -1474,19 +1449,24 @@ class _RankingThread(QThread):
 
 class _ThumbLoader(QThread):
     """
-    Background thread that builds small downscaled preview thumbnails (QImage)
-    for every tilt of one series, for the overview-bar hover preview. Emits each
+    Background thread that builds downscaled preview thumbnails (QImage) for
+    every tilt of one series, for the overview-bar hover preview. Emits each
     thumbnail as it is ready; a stop flag lets a series-switch abandon the rest.
     Produces QImage (safe to build off the GUI thread); the GUI converts to
-    QPixmap on display. Memory is bounded to one series (~5 MB).
+    QPixmap on display.
+
+    Each loader carries a monotonic `token`; the GUI only accepts thumbnails
+    whose token matches the current one, so results from a superseded series
+    can never land in the wrong cache. Memory is bounded to one series
+    (~20 MB at MAX_PX=640 for a 61-tilt series).
     """
-    thumb_ready = pyqtSignal(int, int, object)   # series_idx, real_idx, QImage
+    thumb_ready = pyqtSignal(int, int, object)   # token, real_idx, QImage
 
-    MAX_PX = 320
+    MAX_PX = 640          # thumbnail long edge (px) held in memory
 
-    def __init__(self, series_idx, paths, contrast_lo, contrast_hi):
+    def __init__(self, token, paths, contrast_lo, contrast_hi):
         super().__init__()
-        self._series_idx = series_idx
+        self._token = token
         self._paths = paths
         self._lo = contrast_lo
         self._hi = contrast_hi
@@ -1504,7 +1484,7 @@ class _ThumbLoader(QThread):
                 continue
             qimg = self._to_thumb(img)
             if qimg is not None:
-                self.thumb_ready.emit(self._series_idx, real_idx, qimg)
+                self.thumb_ready.emit(self._token, real_idx, qimg)
 
     def _to_thumb(self, arr):
         try:
@@ -1525,9 +1505,11 @@ class _ThumbLoader(QThread):
 
 class HoverPreview(QWidget):
     """
-    Small frameless popup that shows a tilt's preview image while the mouse
-    hovers over the overview bar. Follows the cursor; never steals focus.
+    Frameless popup that shows a tilt's preview image while the mouse hovers
+    over the overview bar. Follows the cursor; never steals focus.
     """
+    VIEW_PX = 380        # on-screen size of the preview image (px)
+
     def __init__(self, parent=None):
         super().__init__(parent, Qt.ToolTip | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
@@ -1537,7 +1519,7 @@ class HoverPreview(QWidget):
         lay.setContentsMargins(4, 4, 4, 4)
         lay.setSpacing(2)
         self._img = QLabel()
-        self._img.setFixedSize(240, 240)
+        self._img.setFixedSize(self.VIEW_PX, self.VIEW_PX)
         self._img.setAlignment(Qt.AlignCenter)
         self._img.setStyleSheet("border:none;")
         self._cap = QLabel()
@@ -1550,7 +1532,8 @@ class HoverPreview(QWidget):
     def show_thumb(self, qimage, caption, gx, gy):
         if qimage is not None:
             pm = QPixmap.fromImage(qimage).scaled(
-                240, 240, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.VIEW_PX, self.VIEW_PX,
+                Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self._img.setPixmap(pm)
         else:
             self._img.setPixmap(QPixmap())
@@ -1575,7 +1558,7 @@ class MainWindow(QMainWindow):
     def __init__(self, series_list, frame_dir=None,
                  sigma=3.0, contrast_lo=2, contrast_hi=98,
                  loss_dir=None, xml_dir=None, io_workers=16,
-                 ctf_mod=8.0, ctf_bad=10.0):
+                 ctf_mod=8.0, ctf_bad=10.0, interest_file=None):
         super().__init__()
         self.series_list = series_list
         self.loss_dir    = loss_dir
@@ -1627,6 +1610,16 @@ class MainWindow(QMainWindow):
         self._used_loss_in_rank = False
         self._ranking_done = False
 
+        # Datasets flagged as containing particles of interest. Kept in flag
+        # order and mirrored to a plain text file that is rewritten on every
+        # change, so the record survives a crash and can be read by downstream
+        # scripts while the session is still running.
+        self.interest_file = self._resolve_interest_file(interest_file)
+        self.interest = self._load_interest()
+        if self.interest:
+            print(f"  Loaded {len(self.interest)} tomogram(s) of interest from "
+                  f"{self.interest_file}")
+
         self._load_series(0)
         self._build_ui()
         self._refresh()
@@ -1634,8 +1627,6 @@ class MainWindow(QMainWindow):
 
         # Kick off ranking in the background once the event loop is running.
         QTimer.singleShot(0, self._start_background_ranking)
-        # Preload hover thumbnails for the first series.
-        QTimer.singleShot(0, self._start_thumb_loader)
 
     # ── Ranking ─────────────────────────────────────────────────────────────
 
@@ -1656,7 +1647,8 @@ class MainWindow(QMainWindow):
         if m.get('loss') is not None:
             bits.append(f"L{m['loss']:.2f}")
         suffix = ("  " + " ".join(bits)) if bits else ""
-        return f"{rank_str}  {name}{suffix}"
+        star = "\u2605 " if self._is_interesting(i) else ""
+        return f"{rank_str}  {star}{name}{suffix}"
 
     def _gather_metrics_parallel(self):
         """
@@ -1758,9 +1750,6 @@ class MainWindow(QMainWindow):
 
         self._ranking_done = True
         self._rebuild_series_list_widget()
-        # series were reordered -> refresh hover thumbnails for the (possibly
-        # re-indexed) current series
-        self._start_thumb_loader()
 
         n_ranked = sum(1 for r in ranks if r is not None)
         mode = "post-alignment (CTF + motion + loss)" if used_loss \
@@ -2023,7 +2012,8 @@ class MainWindow(QMainWindow):
         self.overview.hover_left.connect(self._on_hover_left)
         self._hover_preview = HoverPreview(self)
         self._thumb_cache = {}          # real_idx -> QImage (current series)
-        self._thumb_series = -1         # which series the cache belongs to
+        self._thumb_key = None          # identity of the cached series
+        self._thumb_token = 0           # monotonic; rejects stale results
         self._thumb_loader = None
         root.addWidget(self.overview, stretch=0)
 
@@ -2060,7 +2050,7 @@ class MainWindow(QMainWindow):
 
         # Motion toggle checkbox
         self._motion_check = QCheckBox("Motion Overlay  [Ctrl+M]")
-        self._motion_check.setChecked(True)
+        self._motion_check.setChecked(False)   # off by default
         self._motion_check.setStyleSheet(f"""
             QCheckBox {{
                 color: {C_TEXT}; font-size: 12px; spacing: 6px;
@@ -2157,6 +2147,17 @@ class MainWindow(QMainWindow):
             self._allbulk_buttons.append((b, category))
             bulk_grid.addWidget(b, 1, 1 + col)
 
+        # Flag the current dataset as containing particles of interest. The
+        # list is mirrored to a text file as you go (see --interest_file).
+        self._interest_btn = QPushButton()
+        self._interest_btn.setToolTip(
+            "Flag this dataset as containing particles of interest [Ctrl+I].\n"
+            "Flagged names are written to a text file immediately, so the list "
+            "is always up to date.")
+        self._interest_btn.clicked.connect(self._toggle_interest)
+        bulk_grid.addWidget(self._interest_btn, 1, 4)
+        self._update_interest_button()
+
         self._restyle_bulk_buttons()
         bulk_grid.setColumnStretch(7, 1)      # keep everything left-aligned
         root.addLayout(bulk_grid, stretch=0)
@@ -2215,6 +2216,7 @@ class MainWindow(QMainWindow):
             elif key == Qt.Key_N: self._on_next_series()
             elif key == Qt.Key_Q: self._on_quit_save()
             elif key == Qt.Key_R: self._on_include_all()
+            elif key == Qt.Key_I: self._toggle_interest()
             elif key == Qt.Key_M:
                 self._motion_check.setChecked(
                     not self._motion_check.isChecked())
@@ -2224,6 +2226,10 @@ class MainWindow(QMainWindow):
     # ── Display refresh ────────────────────────────────────────────────────
 
     def _refresh(self):
+        # Keep the hover-preview thumbnails in step with the displayed series,
+        # whichever way the dataset was changed.
+        self._ensure_thumbs()
+        self._update_interest_button()
         s  = self._s()
         ti = self.tilt_idx
         img   = self._get_image(ti)
@@ -2310,33 +2316,150 @@ class MainWindow(QMainWindow):
         if idx < 0 or idx == self.series_idx: return
         self.series_idx = idx; self.tilt_idx = 0
         self._load_series(idx); self._refresh()
-        self._start_thumb_loader()
         # Return focus to the main window so arrow keys / shortcuts work
         # immediately without needing to click elsewhere first
         self.setFocus()
+
+    # ── Particles of interest ─────────────────────────────────────────
+    def _resolve_interest_file(self, explicit):
+        """Where to record tomograms of interest (CLI override, else beside
+        the tilt-series XMLs)."""
+        if explicit:
+            return os.path.abspath(explicit)
+        base = self.xml_dir
+        if not base and self.series_list:
+            first_xml = self.series_list[0][1]
+            if first_xml:
+                base = os.path.dirname(os.path.abspath(first_xml))
+        if not base:
+            base = os.getcwd()
+        return os.path.join(os.path.abspath(base), 'tomograms_of_interest.txt')
+
+    def _load_interest(self):
+        """Read an existing list so previous flags reappear on next launch."""
+        names = []
+        try:
+            if os.path.isfile(self.interest_file):
+                with open(self.interest_file) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#') \
+                                and line not in names:
+                            names.append(line)
+        except Exception as e:
+            print(f"  [WARN] could not read {self.interest_file}: {e}")
+        return names
+
+    def _write_interest(self):
+        """Rewrite the whole file (small, and keeps it consistent on disk)."""
+        try:
+            os.makedirs(os.path.dirname(self.interest_file), exist_ok=True)
+            with open(self.interest_file, 'w') as f:
+                f.write("# TomoTriage \u2014 tomograms containing particles of "
+                        "interest\n")
+                f.write(f"# updated {datetime.now():%Y-%m-%d %H:%M:%S}  "
+                        f"({len(self.interest)} entries)\n")
+                for n in self.interest:
+                    f.write(n + "\n")
+            return True
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Could not save list of interest",
+                f"Failed to write {self.interest_file}:\n{e}")
+            return False
+
+    def _toggle_interest(self):
+        """Flag/unflag the current dataset as containing particles of
+        interest, updating the text file immediately."""
+        if not self.series_list:
+            return
+        name = self._series_name(self.series_list[self.series_idx][0])
+        if name in self.interest:
+            self.interest.remove(name)
+            msg = f"'{name}' removed from tomograms of interest"
+        else:
+            self.interest.append(name)
+            msg = f"'{name}' flagged as containing particles of interest"
+        if self._write_interest():
+            msg += f"  \u2014 {len(self.interest)} in {os.path.basename(self.interest_file)}"
+        self._update_interest_button()
+        self._rebuild_series_list_widget()
+        self.statusBar().showMessage(msg, 5000)
+        self.setFocus()
+
+    def _is_interesting(self, i):
+        if not (0 <= i < len(self.series_list)):
+            return False
+        return self._series_name(self.series_list[i][0]) in self.interest
+
+    def _update_interest_button(self):
+        """Reflect the current dataset's flag state on the button."""
+        if not hasattr(self, '_interest_btn'):
+            return
+        on = self._is_interesting(self.series_idx)
+        self._interest_btn.setText(
+            "\u2605  Particles of interest" if on
+            else "\u2606  Particles of interest")
+        if on:
+            self._interest_btn.setStyleSheet(
+                f"QPushButton {{ background: {C_YELLOW}; color: #1a1a2e; "
+                f"font-weight: bold; border: none; border-radius: 4px; "
+                f"padding: 6px 10px; }}"
+                f"QPushButton:hover {{ background: #f59e0b; }}")
+        else:
+            self._interest_btn.setStyleSheet(
+                f"QPushButton {{ background: transparent; color: {C_YELLOW}; "
+                f"font-weight: bold; border: 2px solid {C_YELLOW}; "
+                f"border-radius: 4px; padding: 5px 10px; }}"
+                f"QPushButton:hover {{ background: {C_YELLOW}; "
+                f"color: #1a1a2e; }}")
 
     def _on_overview_click(self, idx):
         if idx != self.tilt_idx:
             self.tilt_idx = idx; self._refresh()
 
     # ── Overview-bar hover preview ────────────────────────────────────
+    def _ensure_thumbs(self):
+        """
+        Make sure the hover-preview thumbnails belong to the series currently
+        being displayed, starting a loader if not. Called from _refresh, so it
+        covers EVERY way of changing dataset (list click, Next Series, ranking
+        reorder, dataset removal) rather than relying on each call site to
+        remember. Cheap no-op when the cache is already correct.
+        """
+        key = self._series_key()
+        if key is not None and key != self._thumb_key:
+            self._start_thumb_loader()
+
+    def _series_key(self):
+        """Stable identity for the current series (survives list reordering)."""
+        if not self.series_list or not (0 <= self.series_idx
+                                        < len(self.series_list)):
+            return None
+        return self.series_list[self.series_idx][0]
+
     def _start_thumb_loader(self):
         """(Re)start the background thumbnail loader for the current series."""
         if self._thumb_loader is not None:
             self._thumb_loader.stop()
             self._thumb_loader = None
         self._thumb_cache = {}
-        self._thumb_series = self.series_idx
+        self._thumb_key = self._series_key()
+        if self._thumb_key is None:
+            return
+        # Bump the token so any in-flight results from the previous series are
+        # rejected rather than landing in the new cache.
+        self._thumb_token += 1
         s = self._s()
-        loader = _ThumbLoader(self.series_idx, list(s['image_paths']),
+        loader = _ThumbLoader(self._thumb_token, list(s['image_paths']),
                               self.clo, self.chi)
         loader.thumb_ready.connect(self._on_thumb_ready)
         self._thumb_loader = loader
         loader.start()
 
-    def _on_thumb_ready(self, series_idx, real_idx, qimg):
-        # ignore stale results from a previous series
-        if series_idx == self._thumb_series:
+    def _on_thumb_ready(self, token, real_idx, qimg):
+        # ignore stale results from a superseded series
+        if token == self._thumb_token:
             self._thumb_cache[real_idx] = qimg
 
     def _on_tilt_hovered(self, real_idx, gx, gy):
@@ -2461,7 +2584,6 @@ class MainWindow(QMainWindow):
             self._load_series(self.series_idx)
             self._rebuild_series_list_widget()
             self._refresh()
-            self._start_thumb_loader()
         self.statusBar().showMessage(
             f"Excluded {moved} dataset(s) \u2014 XMLs moved to "
             f"excluded_datasets/", 5000)
@@ -2498,7 +2620,6 @@ class MainWindow(QMainWindow):
         s = self._s()
         was = s['excluded'][self.tilt_idx]
         s['excluded'][self.tilt_idx] = not was
-        if not was: _play_exclude_sound()
         self._refresh()
 
     def _on_include_all(self):
@@ -2530,8 +2651,6 @@ class MainWindow(QMainWindow):
             if not s['excluded'][i] and self._categorise(i) == category:
                 s['excluded'][i] = True
                 count += 1
-        if count:
-            _play_exclude_sound()
         self._refresh()
         self.statusBar().showMessage(
             f"Excluded {count} {category.replace('_', ' ')} tilt(s)", 3000)
@@ -2566,8 +2685,6 @@ class MainWindow(QMainWindow):
             if not s['excluded'][i]:
                 s['excluded'][i] = True
                 count += 1
-        if count:
-            _play_exclude_sound()
         self._refresh()
         self.statusBar().showMessage(
             f"Excluded all {s['n']} tilts in '{name}' \u2014 dataset rejected "
@@ -2702,7 +2819,6 @@ class MainWindow(QMainWindow):
         self._load_series(self.series_idx)
         self._rebuild_series_list_widget()
         self._refresh()
-        self._start_thumb_loader()
 
     def _categorise_in(self, s, i):
         """Category of tilt i within an arbitrary loaded series dict s."""
@@ -2753,8 +2869,6 @@ class MainWindow(QMainWindow):
             if count:
                 affected_series += 1
                 total += count
-        if total:
-            _play_exclude_sound()
         self._refresh()
         self.statusBar().showMessage(
             f"Excluded {total} '{label}' tilt(s) across {affected_series} "
@@ -2987,7 +3101,7 @@ def _show_splash(app, logo_path=None, seconds=5):
 def run_batch(tomostar_dir, frame_dir, xml_dir=None,
               sigma=3.0, contrast_lo=2, contrast_hi=98, loss_dir=None,
               logo=None, splash_seconds=5, io_workers=16,
-              ctf_mod=8.0, ctf_bad=10.0):
+              ctf_mod=8.0, ctf_bad=10.0, interest_file=None):
     pairs = find_tilt_series(tomostar_dir, frame_dir, xml_dir)
     if not pairs:
         print(f"[ERROR] No .tomostar files in {tomostar_dir}"); sys.exit(1)
@@ -2996,7 +3110,8 @@ def run_batch(tomostar_dir, frame_dir, xml_dir=None,
     splash = _show_splash(app, logo, splash_seconds) if splash_seconds else None
     win = MainWindow(pairs, frame_dir, sigma, contrast_lo, contrast_hi,
                      loss_dir=loss_dir, xml_dir=xml_dir, io_workers=io_workers,
-                     ctf_mod=ctf_mod, ctf_bad=ctf_bad)
+                     ctf_mod=ctf_mod, ctf_bad=ctf_bad,
+                     interest_file=interest_file)
     win.show()
     if splash is not None:
         splash.finish(win)
@@ -3049,6 +3164,12 @@ def parse_args():
                    help="CTF resolution (\u00c5) amber/purple boundary: tilts with "
                         "CTF worse than this become purple (default 10.0). Must "
                         "be greater than --ctf_amber.")
+    p.add_argument('--interest_file', default=None, metavar='PATH',
+                   help="Text file recording tomograms flagged as containing "
+                        "particles of interest (Ctrl+I / the star button). "
+                        "Rewritten immediately on every change, and read back "
+                        "on startup so flags persist. Default: "
+                        "tomograms_of_interest.txt beside the tilt-series XMLs.")
     return p.parse_args()
 
 
@@ -3066,7 +3187,8 @@ def main():
                   loss_dir=args.loss_dir,
                   logo=args.logo, splash_seconds=splash_seconds,
                   io_workers=args.io_workers,
-                  ctf_mod=args.ctf_amber, ctf_bad=args.ctf_purple)
+                  ctf_mod=args.ctf_amber, ctf_bad=args.ctf_purple,
+                  interest_file=args.interest_file)
     else:
         ts_xml = args.xml
         if not ts_xml:
@@ -3080,7 +3202,8 @@ def main():
                          args.contrast_lo, args.contrast_hi,
                          loss_dir=args.loss_dir, xml_dir=args.xml_dir,
                          io_workers=args.io_workers,
-                         ctf_mod=args.ctf_amber, ctf_bad=args.ctf_purple)
+                         ctf_mod=args.ctf_amber, ctf_bad=args.ctf_purple,
+                         interest_file=args.interest_file)
         win.show()
         if splash is not None:
             splash.finish(win)

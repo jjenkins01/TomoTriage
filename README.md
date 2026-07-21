@@ -10,7 +10,7 @@ An interactive quality control tool for tilt series data processed with [WarpToo
 
 - **Tilt image with motion overlay** on the left; **power spectrum and diagnostic plots** on the right (CTF fit, CTF resolution, defocus, and motion vs tilt angle)
 - **Images from `average/`** — every acquired tilt is shown (loaded from the per-tilt motion-corrected averages), so excluded tilts remain visible and can be re-included later
-- **Motion track overlay** drawn spatially on the tilt image — each patch placed at its correct grid position and colour-coded by motion magnitude (green = low, red = high). Toggle on/off with a checkbox or `Ctrl+M`
+- **Motion track overlay** drawn spatially on the tilt image — each patch placed at its correct grid position and colour-coded by motion magnitude (green = low, red = high). **Off by default**; turn it on with the checkbox or `Ctrl+M`
 - **CTF-colour-coded overview bar** — ordered by tilt angle (0° centre, extremes at the edges); click any bar to jump directly to that tilt, or **hover** to preview that tilt's image without clicking. Category colours **and the CTF thresholds** are customisable.
 - **Exclusion** of bad tilts writes to `<UseTilt>` in the tilt-series XML (mapped by tilt angle); the `.tomostar` is never modified, and previous exclusions are restored automatically on next load
 - **Bulk exclude-by-colour** — exclude all tilts of a category (purple / amber / orange) in one click, on the current dataset or across all loaded datasets
@@ -18,6 +18,7 @@ An interactive quality control tool for tilt series data processed with [WarpToo
 - **Whole-dataset rejection** — "Exclude ALL frames" marks every tilt in a dataset excluded; "Exclude dataset" moves its XML out to `excluded_datasets/` so downstream WarpTools / miss-alignment steps skip it entirely; or multi-select in the list and "Exclude selected datasets" to reject several at once
 - **Scrollable, multi-selectable tilt series list** — switch between datasets with a click; Ctrl/Shift-click to select several for batch rejection
 - **Automatic dataset ranking** — the tilt-series list is ranked by quality (best at the top, #1 = best) using CTF resolution, motion, and, once alignment has run, the miss-alignment loss. Auto-detects whether alignment has been done and ranks accordingly. Ranking runs in the background so the window opens fast even for hundreds of tomograms.
+- **Flag tomograms of interest** — mark a dataset as containing particles of interest with a star button or `Ctrl+I`; flagged names are written to a text file as you go and reloaded next session
 - **Per-tilt metadata** — CTF fit (Å), defocus (µm), and motion (Å) from WarpTools per-frame XML
 
 ---
@@ -231,6 +232,7 @@ tomotriage \
 | `--io_workers N` | Number of parallel workers for reading ranking metadata at startup (default: 16). Higher can be faster on high-latency network storage; `1` = serial. |
 | `--ctf_amber A` | CTF resolution (Å) good/amber boundary — tilts worse than this become amber (default: 8.0). Also adjustable live in the Categories… dialog. |
 | `--ctf_purple A` | CTF resolution (Å) amber/purple boundary — tilts worse than this become purple (default: 10.0). Must exceed `--ctf_amber`. |
+| `--interest_file PATH` | Where to record tomograms flagged as containing particles of interest (default: `tomograms_of_interest.txt` beside the tilt-series XMLs). |
 
 ---
 
@@ -250,7 +252,7 @@ Displays the motion-corrected average for the current tilt. When a tilt is exclu
 | Yellow | Medium |
 | Red / orange | High |
 
-Toggle with the **Motion Overlay** checkbox or `Ctrl+M`.
+The overlay is **off by default** — turn it on with the **Motion Overlay** checkbox or `Ctrl+M`.
 
 One additional control refines the motion display:
 
@@ -271,7 +273,7 @@ multiplied by the fitted scale envelope. Both share the same envelope and decay 
 
 One coloured bar per tilt, **ordered by tilt angle** — the most negative tilt on the left, 0° in the centre, and the most positive on the right. For a dose-symmetric series (e.g. −60° → +60°) this means the bar mirrors the physical tilt geometry rather than the acquisition order. Sparse angle labels are shown along the axis. **Click any bar to jump directly to that tilt.**
 
-**Hover preview.** Move the mouse across the bar and a small popup shows that tilt's image, updating as you sweep — no clicking needed, so you can scan a whole series quickly. Thumbnails for the current series are downscaled and preloaded in the background when a dataset opens (a few MB in memory, no disk cache), so hovering is smooth; a tilt not yet loaded briefly shows "loading…".
+**Hover preview.** Move the mouse across the bar and a small popup shows that tilt's image, updating as you sweep — no clicking needed, so you can scan a whole series quickly. Thumbnails for the current series are preloaded in the background when a dataset opens — up to 640 px each, shown at 380 px — so the preview is sharp and hovering stays smooth. Memory is bounded to the current series (~20 MB for a 61-tilt series) and nothing is written to disk; a tilt not yet loaded briefly shows "loading…". The preview follows whichever dataset is displayed, however you switched to it.
 
 Colour coding (priority order):
 
@@ -317,6 +319,16 @@ Prefer **Exclude dataset** for a tomogram you want to drop from the run: a fully
 
 **Rejecting several at once.** Ctrl/Shift-click multiple datasets in the tilt-series list, then click **Exclude selected datasets** (below the list) to move all of their XMLs into `excluded_datasets/` in one action (backups kept, one confirmation). This is the batch form of "Exclude dataset". A plain single click in the list still just switches to that dataset.
 
+### Flagging tomograms of interest
+
+Reviewing tilt series is also when you first notice which tomograms actually contain the particles you care about. The **★ Particles of interest** button (or `Ctrl+I`) flags the current dataset; pressing it again unflags it.
+
+- Flagged datasets are **written to a text file straight away** — one tomogram name per line, rewritten on every change — so the list is always up to date and can be read by another script while TomoTriage is still open.
+- The file is **read back on startup**, so flags persist between sessions and previously flagged datasets reappear.
+- Flagged datasets show a **★ in the ranked list**, and the button turns solid gold for the current dataset.
+
+By default the file is `tomograms_of_interest.txt` next to the tilt-series XMLs; use `--interest_file PATH` to put it elsewhere. The flag is independent of exclusions — flagging a dataset does not change `<UseTilt>`, and excluding a dataset does not remove it from the file.
+
 ### Tilt series list (ranked)
 
 Lists all tilt series, **ranked by quality with the best at the top** (rank #1 = best). Click a name to switch to it; scroll with the mouse wheel. Each row shows the rank, the series name, its CTF resolution, and — after alignment — the alignment loss.
@@ -340,7 +352,8 @@ The alignment loss is miss-alignment's own precision-weighted model score (lower
 |---|---|
 | `←` / `→` | Previous / next tilt |
 | `Ctrl+E` | Toggle exclude on current tilt |
-| `Ctrl+M` | Toggle motion overlay |
+| `Ctrl+M` | Toggle motion overlay (off by default) |
+| `Ctrl+I` | Flag / unflag this dataset as containing particles of interest |
 | `Ctrl+S` | Save exclusions for current series |
 | `Ctrl+N` | Move to next series |
 | `Ctrl+Q` | Save and quit |

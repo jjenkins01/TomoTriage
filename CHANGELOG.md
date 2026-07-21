@@ -5,6 +5,42 @@ are documented here.
 
 ---
 
+## [2.7.0] - 2026-07-20
+
+### Added
+- **Flag datasets containing particles of interest.** A star button (or
+  `Ctrl+I`) marks the current dataset as containing particles of interest.
+  Flagged names are written to a plain text file **immediately on every change**,
+  so the list is always current and readable by downstream scripts mid-session.
+  The file is read back on startup, so flags persist between sessions, and
+  flagged datasets are marked with a star in the ranked list. Location defaults
+  to `tomograms_of_interest.txt` beside the tilt-series XMLs; override with
+  `--interest_file`.
+
+### Changed
+- **Higher-resolution hover preview.** Thumbnails are now held at up to 640 px
+  (was 320 px) and displayed at 380 px (was 240 px), so the hover image is
+  noticeably sharper and slightly larger. Memory is still bounded to the current
+  series (~20 MB for a 61-tilt series) with no disk cache.
+- **Motion tracks are now off by default.** The motion overlay starts hidden and
+  is shown only when enabled via the "Motion Overlay" checkbox or `Ctrl+M`.
+
+### Fixed
+- **Hover preview did not update when moving to the next dataset.** Using
+  "Next Series" (`Ctrl+N`) changed the displayed dataset without restarting the
+  thumbnail loader, so hovering showed the *previous* dataset's tilts until you
+  clicked back and forward in the list. The thumbnail cache is now tied to the
+  displayed series' identity and re-checked on every refresh, so it follows the
+  dataset however it was changed (list click, Next Series, ranking reorder, or
+  dataset removal). Stale results from a superseded series are rejected via a
+  token, so a fast switch can no longer mix thumbnails between datasets.
+
+### Removed
+- **The exclusion sound.** The unused beep played on exclusion (and its `aplay`
+  subprocess) has been removed entirely; exclusion behaviour is unchanged.
+
+---
+
 ## [2.6.0] - 2026-07-17
 
 ### Added
